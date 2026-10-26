@@ -55,6 +55,52 @@
     "hint": "开启后，网易云音乐功能将被完全禁用（包括LLM自动调用翻唱工具和手动命令），所有点歌请求将强制使用QQ音乐。推荐开启以获取更全的音乐版权。",
     "default": false
   },
+  "netease_cookie": {
+    "description": "网易云 MUSIC_U（取整首歌必需）",
+    "type": "string",
+    "hint": "在浏览器登录 music.163.com 后，从开发者工具 → Application → Cookies 里复制 MUSIC_U 的值（只填值，不要带 'MUSIC_U=' 前缀）。插件只保存在本机配置里，不会外传；留空则无法用官方接口取整首，只能靠洛雪兜底。",
+    "default": ""
+  },
+  "netease_quality": {
+    "description": "网易云取歌音质（kbps）",
+    "type": "int",
+    "hint": "官方接口的码率档位，只支持 128 / 192 / 320 三档，默认 320。填其它值会按 320 处理。",
+    "default": 320,
+    "minimum": 128,
+    "maximum": 320
+  },
+  "lx_source_base": {
+    "description": "洛雪源服务地址（兜底用）",
+    "type": "string",
+    "hint": "官方接口失败后的最后一条路，形如 http://127.0.0.1:1011（不带结尾斜杠也行）。不需要兜底可以留空。",
+    "default": "http://127.0.0.1:1011"
+  },
+  "lx_source_key": {
+    "description": "洛雪源认证头 X-LxM-Auth",
+    "type": "string",
+    "hint": "请求洛雪源服务时要带的认证值，和 lx_source_base 来自同一个服务。留空则不带认证头。",
+    "default": "U4sEbWlFA+3zgEiG8/MItw=="
+  },
+  "enable_lx_fallback": {
+    "description": "启用洛雪源兜底",
+    "type": "bool",
+    "hint": "开启后，官方接口取不到整首（没 cookie、cookie 失效、只给试听等）时会再用同一个歌曲 id 去洛雪源试一次。兜底同样会过滤试听片段，拿不到整首就不提交给中间层。",
+    "default": true
+  },
+  "alert_admin_on_cookie_expired": {
+    "description": "网易云 cookie 连续失效时提醒管理员",
+    "type": "bool",
+    "hint": "连续 3 次取歌都因为 cookie 相关问题失败（没配置、401、接口 code 不对、只给试听）时，私聊管理员提醒更新 cookie；读不到 admins_id 时发到触发点歌的会话。",
+    "default": true
+  },
+  "cookie_alert_interval_hours": {
+    "description": "cookie 失效提醒最小间隔（小时）",
+    "type": "int",
+    "hint": "同一个失效状态在这段时间内只提醒一次，避免刷屏。取歌成功后状态立即清空，下次失效会重新提醒。",
+    "default": 6,
+    "minimum": 1,
+    "maximum": 168
+  },
   "qq_official_cards": {
     "description": "自动识别 QQ 官方机器人并使用 Markdown 卡片",
     "type": "bool",

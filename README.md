@@ -216,6 +216,13 @@ SoulX-SVCVC 使用参考音频进行零样本音色转换，不需要训练 `.pt
 | `enable_svcvc` | `false` | 启用 SoulX-SVCVC |
 | `enable_qqmusic` | `true` | 启用 QQ 音乐 |
 | `disable_netease` | `false` | 禁用网易云点歌 |
+| `netease_cookie` | 空 | 网易云 `MUSIC_U` 值，官方接口取整首必需；只存本机 |
+| `netease_quality` | `320` | 网易云取歌音质，只支持 `128` / `192` / `320` |
+| `lx_source_base` | `http://127.0.0.1:1011` | 洛雪源服务地址（只在官方接口失败时兜底） |
+| `lx_source_key` | `U4sEbWlFA+3zgEiG8/MItw==` | 洛雪源认证头 `X-LxM-Auth` |
+| `enable_lx_fallback` | `true` | 官方接口取不到整首时启用洛雪兜底 |
+| `alert_admin_on_cookie_expired` | `true` | cookie 连续失效时提醒管理员 |
+| `cookie_alert_interval_hours` | `6` | 同一失效状态的最小提醒间隔（小时） |
 | `enable_progress_bar` | `true` | 将后端进度发到聊天 |
 | `notify_progress` | `false` | 发送翻唱进度提示（自维护分支新增；打开后也只由人格模型说一句） |
 | `notify_retry` | `false` | 发送风控自动重试提示（自维护分支新增；默认不打扰用户） |
@@ -225,6 +232,18 @@ SoulX-SVCVC 使用参考音频进行零样本音色转换，不需要训练 `.pt
 | `llm_force_mode` | `false` | 禁用手动命令，只允许 LLM 工具 |
 
 SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时提高到 `9000` 秒。
+
+### 网易云取歌（官方接口 + cookie）
+
+网易云点歌不再把歌曲 id 直接丢给中间层（中间层不认 id），而是插件先下载成整首音频文件，再把本地路径交给中间层：
+
+1. 配置 `netease_cookie`：浏览器登录 `music.163.com`，开发者工具 → Application → Cookies，复制 `MUSIC_U` 的值（只填值，不带 `MUSIC_U=`）。cookie 只保存在本机插件配置里。
+2. 插件调官方接口 `GET https://music.163.com/api/song/enhance/player/url?ids=[<id>]&br=<码率>` 拿到直链后流式下载（单文件上限 60MB，落在 `temp_audio/`，任务结束自动清理）。
+3. **整首判定**（五条全满足才算成功）：HTTP 200、`code == 200`、`data[0].url` 非空、`data[0].freeTrialInfo` 为 `null`、`data[0].time >= 80000`（毫秒）。只给试听片段的返回会被判失败，不会送进翻唱流程。
+4. 官方接口失败（没 cookie、cookie 失效、只给试听、网络错误）后，若 `enable_lx_fallback` 打开，再用同一个歌曲 id 去洛雪源 `GET <lx_source_base>/link/wy/<id>/<音质>` 兜底。洛雪返回体通常只有链接、没有时长，所以插件下完文件会用 `ffprobe` 量真实时长，同样按 `>= 80 秒` 过滤试听；量不到时长按失败处理。
+5. 连续 3 次取歌都因为 cookie 相关问题（没配置、HTTP 401、`code != 200`、只给试听）失败时，私聊 AstrBot 全局配置里的 `admins_id` 提醒更新 cookie；找不到管理员就发回触发点歌的会话。同一失效状态按 `cookie_alert_interval_hours` 去重，取歌成功后状态清空。
+
+> 洛雪兜底依赖本机 `ffprobe`（通常随 `ffmpeg` 一起安装）。没有 `ffprobe` 时兜底一律按"无法确认是整首"失败，不会把可疑片段交给中间层。
 
 ### SoulX 参数
 
@@ -311,7 +330,7 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 - `progress_update_interval` 控制聊天提示频率，避免刷屏。
 - 中间层返回 `cache_hit` 时，插件会提示缓存命中并直接发送结果。
 - 默认先发送 QQ 语音；语音发送失败时无论 `enable_send_file` 是否开启都会继续发送音频文件，避免结果丢失。
-- QQ 音乐由插件先下载到本地，再提交给中间层；网易云歌曲可由对应中间层直接处理。
+- QQ 音乐和网易云都由插件先下载成整首文件，再提交给中间层；网易云走官方接口 + `MUSIC_U` cookie，洛雪源只在失败时兜底，试听片段会被过滤掉。
 
 ## 常见问题
 
@@ -330,6 +349,10 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 ### QQ 音乐无法获取播放地址
 
 普通歌曲优先使用 QQ 音乐接口。VIP/付费歌曲可选配置 `third_party_api_key`；默认值为空，仓库不包含任何 API 密钥。频繁触发风控时可调整重试设置。
+
+### 网易云提示“拿不到整首歌”
+
+先看日志里两条路的失败原因：`netease_cookie` 是否填写且没过期（重新登录复制 `MUSIC_U`）、`netease_quality` 是否为 `128` / `192` / `320`、洛雪兜底地址和认证头是否对上、本机有没有 `ffprobe`。插件只接受“整首”（≥ 80 秒且不是试听片段），60 秒的试听返回会被直接判失败。
 
 ### SoulX 无法命中缓存
 

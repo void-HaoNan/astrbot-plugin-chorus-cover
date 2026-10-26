@@ -17,6 +17,7 @@ from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
 from astrbot.api.star import Context, Star, register
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.message.components import Record, File
+from astrbot.core.message.message_event_result import MessageChain
 from astrbot.api.message_components import Image as CompImage
 from astrbot.api import logger
 from functools import partial
@@ -27,10 +28,42 @@ try:
 except ImportError:
     QQ_MUSIC_AVAILABLE = False
 
+from . import netease
 from .selection import CoverSelectionUI
 from .outbound import Outbound
 
 MODEL_ALIAS_SEPARATOR = "|||"
+
+
+class _OutboundTarget:
+    """把"主动发给指定会话"包装成 outbound 能用的最小 event 形状。
+
+    统一出口 ``Outbound.say`` 只用到三样东西：``plain_result``、``send``、
+    ``unified_msg_origin``。提醒管理员时当前事件不是管理员会话，又不能绕过
+    出口直接 ``event.send``，所以在这里做一个薄适配层：消息照样由出口层组织
+    语言，只是最终发到 ``context.send_message`` 指定的 session。
+    """
+
+    def __init__(self, context: Any, session: str, unified_msg_origin: str = ""):
+        self._context = context
+        self._session = str(session or "")
+        self.unified_msg_origin = unified_msg_origin
+
+    def plain_result(self, text: str) -> MessageEventResult:
+        return MessageEventResult().message(str(text))
+
+    async def send(self, result: Any) -> bool:
+        session = self._session
+        if not session:
+            return False
+        chain = result if isinstance(result, MessageChain) else MessageChain().message(str(result))
+        try:
+            sent = await self._context.send_message(session, chain)
+        except Exception as exc:
+            logger.warning(f"主动发送到会话 {session} 失败: {exc}")
+            return False
+        return sent is not False
+
 
 @register(
     "astrbot_plugin_chorus_cover",
@@ -74,6 +107,38 @@ class MusicPlugin(Star):
         self.inference_timeout = config.get("inference_timeout", 300)
         self.llm_tool_timeout = config.get("llm_tool_timeout", 10)
         self.music_api_timeout = max(5, int(config.get("music_api_timeout", 20)))
+
+        # === 网易云官方接口取整首 + 洛雪兜底（0.2.0）===
+        self.netease_cookie = str(config.get("netease_cookie", "") or "").strip()
+        try:
+            quality = int(str(config.get("netease_quality", 320) or 320).strip() or 320)
+        except (TypeError, ValueError):
+            logger.warning("netease_quality 配置格式错误，使用默认值 320")
+            quality = 320
+        if quality not in (128, 192, 320):
+            logger.warning(f"netease_quality={quality} 不在 128/192/320 之内，已按 320 处理")
+            quality = 320
+        self.netease_quality = quality
+        self.lx_source_base = str(
+            config.get("lx_source_base", "http://127.0.0.1:1011") or ""
+        ).strip()
+        self.lx_source_key = str(
+            config.get("lx_source_key", "U4sEbWlFA+3zgEiG8/MItw==") or ""
+        ).strip()
+        self.enable_lx_fallback = bool(config.get("enable_lx_fallback", True))
+        self.alert_admin_on_cookie_expired = bool(
+            config.get("alert_admin_on_cookie_expired", True)
+        )
+        try:
+            self.cookie_alert_interval_hours = max(
+                1, int(config.get("cookie_alert_interval_hours", 6))
+            )
+        except (TypeError, ValueError):
+            logger.warning("cookie_alert_interval_hours 配置格式错误，使用默认值 6")
+            self.cookie_alert_interval_hours = 6
+        # 连续 cookie 相关失败计数 + 上次提醒时间（同一失效状态按间隔去重）
+        self._netease_cookie_fail_streak = 0
+        self._cookie_alert_sent_at = 0.0
         
         if self.default_api == "netease":
             from .api import NetEaseMusicAPI
@@ -758,6 +823,176 @@ class MusicPlugin(Star):
                     pass
             logger.error(f"下载音频异常: {e}")
         return None
+
+    # ==================== 网易云官方接口 + 洛雪兜底 ====================
+
+    def _netease_temp_dir(self) -> str:
+        """插件自己的临时音频目录（与本地音频下载共用，退出时会清理）。"""
+        temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_audio")
+        os.makedirs(temp_dir, exist_ok=True)
+        return temp_dir
+
+    def _netease_quality_br(self) -> int:
+        """配置里的音质（128/192/320）换算成接口要的码率。"""
+        return int(self.netease_quality) * 1000
+
+    def _lx_quality(self) -> str:
+        """洛雪接口要的是 ``320k`` 这种写法。"""
+        return f"{int(self.netease_quality)}k"
+
+    def _get_admin_ids(self) -> List[str]:
+        """从 AstrBot 全局配置读管理员 QQ 号（插件自己的 config 里没有）。"""
+        try:
+            global_config = self.context.get_config()
+        except Exception as exc:
+            logger.warning(f"读取 AstrBot 全局配置失败，无法拿到管理员: {exc}")
+            return []
+        admin_ids = None
+        try:
+            admin_ids = global_config.get("admins_id", [])
+        except Exception as exc:
+            logger.warning(f"全局配置里读 admins_id 失败: {exc}")
+            return []
+        if isinstance(admin_ids, str):
+            admin_ids = [admin_ids]
+        result: List[str] = []
+        for item in admin_ids or []:
+            text = str(item or "").strip()
+            if text:
+                result.append(text)
+        return result
+
+    @staticmethod
+    def _friend_session(umo: str, user_id: str) -> str:
+        """由当前事件的 umo 推出"同一平台、私聊某个 QQ"的 session。"""
+        platform = str(umo or "").split(":", 1)[0].strip()
+        if not platform or not str(user_id or "").strip():
+            return ""
+        return f"{platform}:FriendMessage:{str(user_id).strip()}"
+
+    def _cookie_alert_target(self, event: AstrMessageEvent):
+        """提醒管理员时发到哪：优先管理员私聊，找不到管理员就发回触发点歌的会话。"""
+        umo = str(getattr(event, "unified_msg_origin", "") or "")
+        for admin_id in self._get_admin_ids():
+            session = self._friend_session(umo, admin_id)
+            if session:
+                logger.info(f"网易云 cookie 失效提醒将私聊管理员: {session}")
+                return _OutboundTarget(self.context, session, umo)
+        logger.warning("找不到管理员 admins_id，cookie 失效提醒改发到触发点歌的会话")
+        return event
+
+    def _reset_netease_cookie_state(self) -> None:
+        """取歌成功后清空"连续失败"和提醒去重状态。"""
+        if self._netease_cookie_fail_streak or self._cookie_alert_sent_at:
+            logger.info("网易云取歌已恢复，清空 cookie 失效状态")
+        self._netease_cookie_fail_streak = 0
+        self._cookie_alert_sent_at = 0.0
+
+    async def _notify_cookie_expired(self, event: AstrMessageEvent, reason: str) -> None:
+        """连续 3 次 cookie 相关失败后提醒管理员；同一失效状态按间隔去重。"""
+        if not self.alert_admin_on_cookie_expired:
+            return
+        now = time.time()
+        interval_seconds = max(1, int(self.cookie_alert_interval_hours)) * 3600
+        if self._cookie_alert_sent_at and now - self._cookie_alert_sent_at < interval_seconds:
+            logger.info(
+                "网易云 cookie 失效提醒在去重窗口内，跳过 "
+                f"（{int((now - self._cookie_alert_sent_at) / 60)} 分钟前已提醒过）"
+            )
+            return
+        facts = {
+            "reason": "网易云的 cookie 好像失效了，取不到整首歌",
+            "detail": (
+                f"连续 {self._netease_cookie_fail_streak} 次取歌都因为这个失败，"
+                f"最近一次：{reason}"
+            ),
+        }
+        target = self._cookie_alert_target(event)
+        sent = await self.outbound.say(target, "alert", **facts)
+        if not sent and target is not event:
+            # 管理员会话发不出去（平台/session 对不上）时，退回触发点歌的会话
+            logger.warning("管理员会话发送失败，cookie 失效提醒改发到触发点歌的会话")
+            sent = await self.outbound.say(event, "alert", **facts)
+        if sent:
+            # 只有真发出去了才占用去重窗口
+            self._cookie_alert_sent_at = now
+        else:
+            logger.warning("cookie 失效提醒一条都没发出去，下次失败会再试")
+
+    async def _record_netease_cookie_failure(
+        self, event: AstrMessageEvent, reason: str, is_trial: bool
+    ) -> None:
+        """记一次 cookie 相关失败；连续 3 次才提醒，非 cookie 失败打断连续计数。"""
+        if not netease.is_cookie_failure(reason, is_trial):
+            if self._netease_cookie_fail_streak:
+                logger.info(
+                    f"网易云取歌失败原因不是 cookie（{reason}），连续失败计数清零"
+                )
+            self._netease_cookie_fail_streak = 0
+            return
+        self._netease_cookie_fail_streak += 1
+        logger.warning(
+            f"网易云 cookie 相关失败第 {self._netease_cookie_fail_streak} 次: "
+            f"reason={reason} trial={is_trial}"
+        )
+        if self._netease_cookie_fail_streak >= 3:
+            await self._notify_cookie_expired(event, reason)
+
+    async def _fetch_netease_audio(
+        self, event: AstrMessageEvent, song_id: str, song_name: str = ""
+    ) -> tuple[Optional[str], str]:
+        """取网易云整首歌：官方接口优先，失败走洛雪兜底。
+
+        Returns:
+            ``(本地文件路径 或 None, 失败原因)``。成功时失败原因为空串。
+        """
+        dest_dir = self._netease_temp_dir()
+        cookie = str(getattr(self, "netease_cookie", "") or "").strip()
+        reason = netease.REASON_NO_COOKIE
+        is_trial = False
+
+        if cookie:
+            logger.info(
+                f"网易云官方接口取整首: id={song_id} br={self._netease_quality_br()} "
+                f"song={song_name}"
+            )
+            await self._send_progress_notice(event, step="正在取网易云直链", song=song_name)
+            path, reason, is_trial = await asyncio.to_thread(
+                netease.download_by_id,
+                song_id,
+                cookie,
+                self._netease_quality_br(),
+                dest_dir,
+                120,
+            )
+            if path:
+                self._reset_netease_cookie_state()
+                logger.info(f"网易云官方接口下载成功: id={song_id} file={path}")
+                return path, ""
+            logger.warning(f"网易云官方接口没拿到整首: id={song_id} reason={reason}")
+        else:
+            logger.warning("没有配置 netease_cookie，跳过官方接口，直接试洛雪兜底")
+
+        await self._record_netease_cookie_failure(event, reason, is_trial)
+
+        if not (self.enable_lx_fallback and self.lx_source_base):
+            return None, reason
+
+        logger.info(f"网易云走洛雪兜底: id={song_id} base={self.lx_source_base}")
+        lx_path, lx_reason, lx_trial = await asyncio.to_thread(
+            netease.download_via_lx,
+            song_id,
+            self.lx_source_base,
+            self.lx_source_key,
+            self._lx_quality(),
+            dest_dir,
+            120,
+        )
+        if lx_path:
+            logger.info(f"洛雪兜底下载成功: id={song_id} file={lx_path}")
+            return lx_path, ""
+        logger.warning(f"洛雪兜底也没成: id={song_id} reason={lx_reason} trial={lx_trial}")
+        return None, f"官方接口: {reason}；洛雪兜底: {lx_reason}"
 
     def _create_tracked_task(self, coro) -> asyncio.Task:
         """创建被追踪的异步任务，防止任务丢失和异常静默"""
@@ -2822,10 +3057,28 @@ class MusicPlugin(Star):
                 finally:
                     await qq_api.close()
             else:
-                # 网易云等平台：使用ID或名称
-                song_input = song.get("name", str(song.get("id", "unknown")))
-                if isinstance(song.get("id"), int) or (isinstance(song.get("id"), str) and song["id"].isdigit()):
-                    song_input = str(song["id"])
+                # 网易云等平台：先按官方接口取整首（失败走洛雪兜底），中间层只认本地文件
+                raw_id = song.get("id")
+                song_id = str(raw_id if raw_id is not None else "").strip()
+                if song_id.isdigit():
+                    netease_file, netease_reason = await self._fetch_netease_audio(
+                        event, song_id, song_name
+                    )
+                    if not netease_file:
+                        logger.error(f"❌ 网易云源获取失败（song={song_name}）: {netease_reason}")
+                        await self.outbound.say(
+                            event,
+                            "failed",
+                            song=song_name,
+                            model=model_name,
+                            reason=f"网易云拿不到整首歌，{netease_reason}",
+                        )
+                        return
+                    temp_audio_file = netease_file
+                    song_input = netease_file
+                else:
+                    # id 不是纯数字（极少见），沿用旧行为把原值交给中间层
+                    song_input = song.get("name", song_id or "unknown")
             
             result_path, cache_hit, effective_seed = await self._predict_cover(
                 event=event,
@@ -3527,7 +3780,39 @@ class MusicPlugin(Star):
                     return f"❌ QQ音乐源获取失败: {e}。建议换一首歌或稍后再试。"
                 finally:
                     await qq_api.close()
-            
+            elif actual_music_source in ("netease", "netease_nodejs"):
+                # === 网易云：官方接口取整首，失败走洛雪兜底；中间层只认本地文件 ===
+                song_id = str(selected_song.get("id", "") or "").strip()
+                if song_id.isdigit():
+                    netease_file, netease_reason = await self._fetch_netease_audio(
+                        event, song_id, selected_song.get("name", song_name)
+                    )
+                    if not netease_file:
+                        logger.error(
+                            f"[CoverFlow:{flow_id}] stage=netease_audio_failed | "
+                            f"id={song_id} reason={netease_reason}"
+                        )
+                        return (
+                            f"❌ 网易云源获取失败: 拿不到《"
+                            f"{selected_song.get('name', song_name)}》的整首歌（{netease_reason}）。"
+                            "建议换一首歌，或在插件配置里补上 netease_cookie。"
+                        )
+                    await self._send_progress_notice(
+                        event,
+                        step=(
+                            "下载好了，正在提交中间层"
+                            f"（{os.path.getsize(netease_file) / 1024 / 1024:.1f} MiB）"
+                        ),
+                        song=selected_song.get("name", song_name),
+                    )
+                    song_input_for_api = netease_file
+                    # 交给 finally 清理，别把整首歌留在磁盘上
+                    temp_audio_file = netease_file
+                else:
+                    logger.warning(
+                        f"网易云返回的歌曲 id 不是纯数字（{song_id!r}），只能原样交给中间层"
+                    )
+
             base_url = self._get_engine_base_url(api_type)
             logger.info(
                 f"[CoverFlow:{flow_id}] stage=backend_connect | url={base_url}"

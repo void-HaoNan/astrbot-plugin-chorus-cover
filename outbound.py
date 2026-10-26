@@ -5,6 +5,7 @@
 - 进度提示（progress）
 - 风控重试提示（retry）
 - 报错详情（failed）
+- 配置失效提醒（alert，发给管理员）
 
 设计约定：
 
@@ -26,7 +27,7 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 #: 支持的出口类型
-VALID_KINDS = ("start", "progress", "retry", "failed", "done")
+VALID_KINDS = ("start", "progress", "retry", "failed", "done", "alert")
 
 #: 需要开关控制的类型 -> (配置项, 缺省值)
 _SWITCHES: Dict[str, tuple] = {
@@ -55,6 +56,7 @@ _KIND_HINT: Dict[str, str] = {
     "retry": "第一次没成功，正在自动再试一次，跟用户说一句别急",
     "failed": "这件事没做成，得告诉用户没成，并给一句人话的理由",
     "done": "事情做完了，跟用户说一声",
+    "alert": "这是在提醒对方（管理员）：某个配置好像失效了，请他有空去更新一下",
 }
 
 #: 兜底文本：模型不可用 / 出口出错时用，必须极短
@@ -64,6 +66,7 @@ FALLBACK_TEXT: Dict[str, str] = {
     "retry": "再等我一下",
     "failed": "这首没唱成，换个歌名我再试一次",
     "done": "弄好了，听听看",
+    "alert": "网易云的 cookie 好像失效了，你有空更新一下",
 }
 
 #: 人格提示词
@@ -127,35 +130,42 @@ class Outbound:
             return default
 
     # ------------------------------------------------------------------ 出口
-    async def say(self, event: Any, kind: str, **facts: Any) -> None:
+    async def say(self, event: Any, kind: str, **facts: Any) -> bool:
         """说一句话。
 
         Args:
-            event: AstrMessageEvent。
-            kind: 出口类型，取值 start / progress / retry / failed / done。
+            event: AstrMessageEvent，或实现了 ``plain_result`` / ``send`` /
+                ``unified_msg_origin`` 的同形对象（用于主动发给指定会话）。
+            kind: 出口类型，取值 start / progress / retry / failed / done / alert。
             **facts: 交给模型的事实，如 song、model、source、reason、step 等。
+
+        Returns:
+            是否真的发出去了。``progress`` / ``retry`` 被开关静音时返回 False，
+            发送异常也返回 False，方便调用方降级到别的会话重发。
         """
         normalized = str(kind or "").strip().lower()
         if normalized not in VALID_KINDS:
             logger.warning("统一出口收到未知类型 %r，按静音处理", kind)
-            return
+            return False
 
         # progress / retry 默认静音：关掉时一条都不发
         switch = _SWITCHES.get(normalized)
         if switch is not None:
             config_key, default = switch
             if not self._switch(config_key, default):
-                return
+                return False
 
         text = await self._compose(event, normalized, facts)
         if not text:
             text = FALLBACK_TEXT.get(normalized, "嗯，我知道了")
 
         try:
-            await event.send(event.plain_result(text))
+            sent = await event.send(event.plain_result(text))
         except Exception:
             # 发送失败也不能影响翻唱流程
             logger.warning("统一出口发送失败（已忽略），kind=%s", normalized, exc_info=True)
+            return False
+        return sent is not False
 
     # ------------------------------------------------------------------ 内部
     async def _compose(self, event: Any, kind: str, facts: Dict[str, Any]) -> str:
