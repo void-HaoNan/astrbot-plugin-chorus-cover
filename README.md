@@ -216,6 +216,7 @@ SoulX-SVCVC 使用参考音频进行零样本音色转换，不需要训练 `.pt
 | `enable_svcvc` | `false` | 启用 SoulX-SVCVC |
 | `enable_qqmusic` | `true` | 启用 QQ 音乐 |
 | `disable_netease` | `false` | 禁用网易云点歌 |
+| `disable_qqmusic` | `false` | 搜歌只走网易云、不碰 QQ 音乐（避免拿回只能试听的 mid） |
 | `netease_cookie` | 空 | 网易云 `MUSIC_U` 值，官方接口取整首必需；只存本机 |
 | `netease_quality` | `320` | 网易云取歌音质，只支持 `128` / `192` / `320` |
 | `lx_source_base` | `http://127.0.0.1:1011` | 洛雪源服务地址（只在官方接口失败时兜底） |
@@ -242,6 +243,8 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 3. **整首判定**（五条全满足才算成功）：HTTP 200、`code == 200`、`data[0].url` 非空、`data[0].freeTrialInfo` 为 `null`、`data[0].time >= 80000`（毫秒）。只给试听片段的返回会被判失败，不会送进翻唱流程。
 4. 官方接口失败（没 cookie、cookie 失效、只给试听、网络错误）后，若 `enable_lx_fallback` 打开，再用同一个歌曲 id 去洛雪源 `GET <lx_source_base>/link/wy/<id>/<音质>` 兜底。洛雪返回体通常只有链接、没有时长，所以插件下完文件会用 `ffprobe` 量真实时长，同样按 `>= 80 秒` 过滤试听；量不到时长按失败处理。
 5. 连续 3 次取歌都因为 cookie 相关问题（没配置、HTTP 401、`code != 200`、只给试听）失败时，私聊 AstrBot 全局配置里的 `admins_id` 提醒更新 cookie；找不到管理员就发回触发点歌的会话。同一失效状态按 `cookie_alert_interval_hours` 去重，取歌成功后状态清空。
+
+**统一取歌顺序**（卡片选歌、命令点歌、LLM 工具、批量翻唱全部共用 `_prepare_song_audio`，任何入口都不会再把 id / mid 原样交给中间层）：本地文件直通 → 纯数字按网易云 id（官方接口 → 洛雪 `/link/wy`）→ 11~14 位字母数字按 QQ mid（洛雪 `/link/tx` → QQ 官方库 → 按歌名回网易云搜索）→ 其它当歌名（先搜网易云拿数字 id，搜不到再洛雪 `/link/wy/<歌名>`）；每一步下完都用 `ffprobe` 卡 80 秒，60 秒试听一律判失败，失败原因逐层串成一句中文。开启 `disable_qqmusic` 后搜歌阶段直接跳过 QQ（`/qqrvc` 等 QQ 入口会提示改用网易云命令）。
 
 > 洛雪兜底依赖本机 `ffprobe`（通常随 `ffmpeg` 一起安装）。没有 `ffprobe` 时兜底一律按"无法确认是整首"失败，不会把可疑片段交给中间层。
 

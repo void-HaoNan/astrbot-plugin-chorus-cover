@@ -19,6 +19,10 @@
    所以兜底会先按返回体判一次，下完文件再用 ``ffprobe`` 量真实时长，
    同样按 ``>= 80000ms`` 卡一遍——60 秒试听片段因此在兜底这条路上也过不去。
    拿不到时长时按失败处理（宁可不出歌，也不把 60 秒片段丢给中间层）。
+4. 洛雪兜底支持多个源：``wy``（网易云）、``tx``（QQ）、``kw`` / ``mg`` / ``kg``。
+   官方接口这条路用数字 id；``tx`` 那种源传的是 QQ mid，所以这里不再强制
+   "纯数字 id"，只拒绝空值和超长串。不管哪个源，下完文件都过同一条 80 秒闸门，
+   ``tx`` 实测只给 60 秒试听，因此会被挡在这道闸门外（这正是要的效果）。
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -172,6 +177,12 @@ def _suffix_from_url(url: str) -> str:
     if suffix in _AUDIO_SUFFIXES:
         return suffix
     return ".mp3"
+
+
+def _safe_prefix(value: Any) -> str:
+    """把 id / 歌名压成能安全当文件名的一段（非 ASCII 会被丢掉，但不会丢歌）。"""
+    text = re.sub(r"[^0-9A-Za-z_-]+", "", str(value or ""))
+    return text[:48].strip("_-") or "song"
 
 
 def _remove_quietly(path: str) -> None:
@@ -393,6 +404,11 @@ def _probe_duration_ms(path: str) -> Optional[int]:
         return None
 
 
+def probe_duration_ms(path: str) -> Optional[int]:
+    """公开的时长测量（毫秒）：插件侧给 QQ 直链 / 本地文件做 80 秒闸门时调用。"""
+    return _probe_duration_ms(path)
+
+
 # ---------------------------------------------------------------------------
 # 对外入口
 # ---------------------------------------------------------------------------
@@ -473,15 +489,22 @@ def download_via_lx(
 ) -> Tuple[Optional[str], str, bool]:
     """洛雪源兜底：``GET /link/<源>/<id>/<音质>``。
 
-    只用于官方接口失败后的最后一条路。返回体通常只有 ``data``（链接）和
-    ``msg``，所以下完文件后还要量一次真实时长，避免把 60 秒试听片段交出去。
+    只用于"官方/QQ 官方库都拿不到"时的最后一条路。返回体通常只有 ``data``
+    （链接）和 ``msg``，所以下完文件后还要量一次真实时长，避免把 60 秒
+    试听片段交出去。
+
+    Args:
+        song_id: 该源自己的标识。``wy`` 是网易云数字 id；``tx`` 是 QQ mid；
+            也允许直接传歌名（洛雪会自己搜），所以这里**不要求纯数字**。
+        source: 洛雪的音源，``wy`` / ``tx`` / ``kw`` / ``mg`` / ``kg``。
 
     Returns:
         ``(本地路径 或 None, 失败原因, 是否试听)``。
     """
     song_id = str(song_id if song_id is not None else "").strip()
+    source = str(source or "wy").strip().lower() or "wy"
     base_url = str(base_url or "").strip().rstrip("/")
-    if not song_id.isdigit():
+    if not song_id or len(song_id) > 200:
         return None, REASON_BAD_ID, False
     if not base_url:
         return None, REASON_LX_NO_BASE, False
@@ -526,7 +549,7 @@ def download_via_lx(
         link,
         dest,
         timeout,
-        prefix=f"lx_{song_id}",
+        prefix=f"lx_{_safe_prefix(source)}_{_safe_prefix(song_id)}",
     )
     if not path:
         return None, download_reason or REASON_DOWNLOAD, False

@@ -55,6 +55,12 @@
     "hint": "开启后，网易云音乐功能将被完全禁用（包括LLM自动调用翻唱工具和手动命令），所有点歌请求将强制使用QQ音乐。推荐开启以获取更全的音乐版权。",
     "default": false
   },
+  "disable_qqmusic": {
+    "description": "搜索只走网易云（不用 QQ 音乐）",
+    "type": "bool",
+    "hint": "开启后，搜歌阶段不再使用 QQ 音乐，一律用网易云搜索，避免拿回 QQ 音乐的 mid（mid 多半只能取到 60 秒试听）。关掉后 QQ 音乐搜索恢复可用；两个搜索源不能同时禁用，同时开启时按网易云处理。",
+    "default": false
+  },
   "netease_cookie": {
     "description": "网易云 MUSIC_U（取整首歌必需）",
     "type": "string",
