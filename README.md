@@ -17,7 +17,7 @@
 
 适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的 AI 翻唱插件，支持 **RVC、SVC-Fusion、SoulX-SVCVC** 三种语音转换后端，以及网易云音乐、QQ 音乐、本地音频和 LLM 工具调用。
 
-> 当前版本：**v0.1.0**（自维护分支，基线为上游 v2.13.0）
+> 当前版本：**v0.2.2**（自维护分支，基线为上游 v2.13.0）
 >
 > 许可证：**GNU AGPL-3.0**
 >
@@ -239,10 +239,11 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 网易云点歌不再把歌曲 id 直接丢给中间层（中间层不认 id），而是插件先下载成整首音频文件，再把本地路径交给中间层：
 
 1. 配置 `netease_cookie`：浏览器登录 `music.163.com`，开发者工具 → Application → Cookies，复制 `MUSIC_U` 的值（只填值，不带 `MUSIC_U=`）。cookie 只保存在本机插件配置里。
-2. 插件调官方接口 `GET https://music.163.com/api/song/enhance/player/url?ids=[<id>]&br=<码率>` 拿到直链后流式下载（单文件上限 60MB，落在 `temp_audio/`，任务结束自动清理）。
-3. **整首判定**（五条全满足才算成功）：HTTP 200、`code == 200`、`data[0].url` 非空、`data[0].freeTrialInfo` 为 `null`、`data[0].time >= 80000`（毫秒）。只给试听片段的返回会被判失败，不会送进翻唱流程。
-4. 官方接口失败（没 cookie、cookie 失效、只给试听、网络错误）后，若 `enable_lx_fallback` 打开，再用同一个歌曲 id 去洛雪源 `GET <lx_source_base>/link/wy/<id>/<音质>` 兜底。洛雪返回体通常只有链接、没有时长，所以插件下完文件会用 `ffprobe` 量真实时长，同样按 `>= 80 秒` 过滤试听；量不到时长按失败处理。
-5. 连续 3 次取歌都因为 cookie 相关问题（没配置、HTTP 401、`code != 200`、只给试听）失败时，私聊 AstrBot 全局配置里的 `admins_id` 提醒更新 cookie；找不到管理员就发回触发点歌的会话。同一失效状态按 `cookie_alert_interval_hours` 去重，取歌成功后状态清空。
+2. 插件调官方接口 `GET https://music.163.com/api/song/enhance/player/url?ids=[<id>]&br=<码率>` **只为判定**；判定通过后不用它给的 `data[0].url`（该 CDN 直链实测 403），改从外链跳转入口 `GET https://music.163.com/song/media/outer/url?id=<id>.mp3`（带同样的 `Cookie` / `Referer` / `User-Agent`，跟随 302）流式下载（单文件上限 60MB，落在 `temp_audio/`，任务结束自动清理）。
+3. **整首判定**（五条全满足才算成功）：HTTP 200、`code == 200`、`data[0].url` 非空、`data[0].freeTrialInfo` 为 `null`、`data[0].time >= 80000`（毫秒）。只给试听片段的返回会被判失败，不会送进翻唱流程；判定失败也不会再退回外链重试。
+4. 下载完成后再用 `ffprobe` 量一次真实时长，不足 80000ms 的删文件判失败（原因写“下载到的不是整首（时长 xx 秒）”）；下载请求失败时原因里带 HTTP 状态。
+5. 官方接口失败（没 cookie、cookie 失效、只给试听、网络错误）后，若 `enable_lx_fallback` 打开，再用同一个歌曲 id 去洛雪源 `GET <lx_source_base>/link/wy/<id>/<音质>` 兜底。洛雪返回体通常只有链接、没有时长，所以插件下完文件会用 `ffprobe` 量真实时长，同样按 `>= 80 秒` 过滤试听；量不到时长按失败处理。
+6. 连续 3 次取歌都因为 cookie 相关问题（没配置、HTTP 401、`code != 200`、只给试听）失败时，私聊 AstrBot 全局配置里的 `admins_id` 提醒更新 cookie；找不到管理员就发回触发点歌的会话。同一失效状态按 `cookie_alert_interval_hours` 去重，取歌成功后状态清空。
 
 **统一取歌顺序**（卡片选歌、命令点歌、LLM 工具、批量翻唱全部共用 `_prepare_song_audio`，任何入口都不会再把 id / mid 原样交给中间层）：本地文件直通 → 纯数字按网易云 id（官方接口 → 洛雪 `/link/wy`）→ 11~14 位字母数字按 QQ mid（洛雪 `/link/tx` → QQ 官方库 → 按歌名回网易云搜索）→ 其它当歌名（先搜网易云拿数字 id，搜不到再洛雪 `/link/wy/<歌名>`）；每一步下完都用 `ffprobe` 卡 80 秒，60 秒试听一律判失败，失败原因逐层串成一句中文。开启 `disable_qqmusic` 后搜歌阶段直接跳过 QQ（`/qqrvc` 等 QQ 入口会提示改用网易云命令）。
 
@@ -333,7 +334,7 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 - `progress_update_interval` 控制聊天提示频率，避免刷屏。
 - 中间层返回 `cache_hit` 时，插件会提示缓存命中并直接发送结果。
 - 默认先发送 QQ 语音；语音发送失败时无论 `enable_send_file` 是否开启都会继续发送音频文件，避免结果丢失。
-- QQ 音乐和网易云都由插件先下载成整首文件，再提交给中间层；网易云走官方接口 + `MUSIC_U` cookie，洛雪源只在失败时兜底，试听片段会被过滤掉。
+- QQ 音乐和网易云都由插件先下载成整首文件，再提交给中间层；网易云用官方接口判定、外链入口下载（`MUSIC_U` cookie），洛雪源只在失败时兜底，试听片段会被过滤掉。
 
 ## 常见问题
 
@@ -355,7 +356,7 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 
 ### 网易云提示“拿不到整首歌”
 
-先看日志里两条路的失败原因：`netease_cookie` 是否填写且没过期（重新登录复制 `MUSIC_U`）、`netease_quality` 是否为 `128` / `192` / `320`、洛雪兜底地址和认证头是否对上、本机有没有 `ffprobe`。插件只接受“整首”（≥ 80 秒且不是试听片段），60 秒的试听返回会被直接判失败。
+先看日志里两条路的失败原因：`netease_cookie` 是否填写且没过期（重新登录复制 `MUSIC_U`）、`netease_quality` 是否为 `128` / `192` / `320`、洛雪兜底地址和认证头是否对上、本机有没有 `ffprobe`。插件只接受“整首”（≥ 80 秒且不是试听片段），60 秒的试听返回会被直接判失败。接口判定通过后用外链入口 `song/media/outer/url` 下载（不要再用接口给的 CDN 直链，那条会 403），下载失败时日志/原因里会带 HTTP 状态方便定位。
 
 ### SoulX 无法命中缓存
 

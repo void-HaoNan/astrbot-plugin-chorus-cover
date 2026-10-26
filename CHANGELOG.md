@@ -3,6 +3,26 @@
 本文件记录 **astrbot_plugin_chorus_cover**（副歌翻唱 · 自维护分支）的变更。
 上游 `sdfsfsk/matsuko_cover` 的历史日志请见上游仓库，此处只记本分支的差异。
 
+## v0.2.2（2026-10-27）
+
+修网易云整首下载 403：官方接口只用来判定，下载改走外链跳转入口。
+
+### 修复
+
+- **`download_by_id` 不再用接口返回的 `data[0].url` 下载**（该 CDN 直链实测 403 Forbidden），判定通过后固定改走外链跳转入口 `https://music.163.com/song/media/outer/url?id=<id>.mp3`，请求头同样带 `Cookie: MUSIC_U` / `Referer` / `User-Agent`，`urllib` 默认跟随 302。接口判定逻辑（HTTP 200、`code == 200`、`url` 非空、`freeTrialInfo is null`、`time >= 80000`）原样保留；判定失败（如只给试听）仍直接返回，不再退回外链碰运气。
+- **下载后再用 `ffprobe` 量一次真实时长**：不足 80000ms 就删文件并返回失败原因“下载到的不是整首（时长 xx 秒）”，量不到时长按“下载完量不到时长，无法确认是整首”失败（宁可不出歌，也不把片段交出去）。
+- **下载失败原因带 HTTP 状态**：`REASON_HTTP_DOWNLOAD`（“下载地址返回 HTTP xxx”）在直链返回 403/404 等时原样透出，方便定位。
+
+### 变化
+
+- 下载请求头抽成 `MEDIA_USER_AGENT` / `MEDIA_REFERER` + `_media_headers(cookie)`，与接口那套 `DEFAULT_USER_AGENT` / `OFFICIAL_REFERER` / `_api_headers(cookie)` 分开维护，改一边不影响另一边；`_download_file` 改为接收 `headers` 字典。
+
+### 验证
+
+- `netease.py`、`main.py` 的 `py_compile` 通过（Python 3.12）。
+- 用线上配置里的 `netease_cookie` 真实跑了一次 `download_by_id('2652820720', cookie)`：落盘 4,464,684 字节（约 4.4MB），`ffprobe` 时长 278,962ms（约 279 秒），`reason` 为空、`is_trial=False`；跳转落在 `m701.music.126.net`，`Content-Type: audio/mpeg`，是整首 128k。
+- 已同步 `netease.py` / `main.py` / `metadata.yaml` / `README.md` / `CHANGELOG.md` 到线上插件副本，逐文件 SHA256 对齐；未重启服务。
+
 ## v0.2.1（2026-10-27）
 
 把"取歌"这条链收成一个入口：卡片选歌、命令点歌、LLM 工具、批量翻唱都只走 `_prepare_song_audio`，id / QQ mid 不再有任何一条路能原样递给中间层。

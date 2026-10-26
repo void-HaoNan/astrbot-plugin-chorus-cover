@@ -14,7 +14,12 @@
    - ``data[0].freeTrialInfo is None``（非 null 就是只给了试听片段）；
    - ``data[0].time >= 80000``（毫秒，整首时长）。
 
-   任一条不满足都算失败并给出简短中文原因。洛雪兜底返回体里通常**没有**
+   任一条不满足都算失败并给出简短中文原因。**接口只负责判定**：判定通过后
+   它给的 ``data[0].url`` 不拿来下载（实测 CDN 直接 403），统一换成外链跳转
+   入口 ``https://music.163.com/song/media/outer/url?id=<id>.mp3``（``urllib``
+   默认跟随 302）；判定失败（比如只给试听）就直接返回，不再退回外链。
+   下载完成后同样用 ``ffprobe`` 量一次真实时长，不足 80 秒的删文件判失败。
+   洛雪兜底返回体里通常**没有**
    ``time`` / ``freeTrialInfo``（它的协议只有 ``data`` 链接和 ``msg``），
    所以兜底会先按返回体判一次，下完文件再用 ``ffprobe`` 量真实时长，
    同样按 ``>= 80000ms`` 卡一遍——60 秒试听片段因此在兜底这条路上也过不去。
@@ -41,11 +46,17 @@ from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
-#: 官方取直链接口（GET）
+#: 官方取直链接口（GET）：只用来判定是不是整首
 OFFICIAL_URL = "https://music.163.com/api/song/enhance/player/url"
 #: 官方接口要求的请求头（2026-10-27 实测）
 DEFAULT_USER_AGENT = "Mozilla/5.0"
 OFFICIAL_REFERER = "https://music.163.com"
+
+#: 音频下载入口：接口给的 CDN 直链实测 403，这个外链入口会 302 到可用节点
+MEDIA_OUTER_URL = "https://music.163.com/song/media/outer/url?id={song_id}.mp3"
+#: 音频下载的请求头（和接口那套分开维护，改一边不影响另一边）
+MEDIA_USER_AGENT = "Mozilla/5.0"
+MEDIA_REFERER = "https://music.163.com"
 
 #: 单文件下载上限：60MB（整首 320k 大约 10MB，留足余量）
 MAX_DOWNLOAD_BYTES = 60 * 1024 * 1024
@@ -72,6 +83,8 @@ REASON_TOO_BIG = "文件超过60MB"
 REASON_NOT_AUDIO = "下载地址返回的不是音频"
 REASON_HTTP = "接口返回 HTTP {status}"
 REASON_HTTP_DOWNLOAD = "下载地址返回 HTTP {status}"
+REASON_DL_NO_TIME = "下载完量不到时长，无法确认是整首"
+REASON_DL_TOO_SHORT = "下载到的不是整首（时长 {seconds} 秒）"
 REASON_CODE = "接口 code={code}"
 REASON_REQUEST_FAILED = "接口请求失败"
 REASON_LX_NO_BASE = "没配置洛雪地址"
@@ -298,12 +311,29 @@ def _fetch_json(url: str, headers: dict, timeout: float) -> Tuple[int, Any, str]
     return status, payload, ""
 
 
+def _api_headers(cookie: str) -> dict:
+    """官方接口请求头：``MUSIC_U`` 只传值，不带 ``MUSIC_U=`` 前缀。"""
+    return {
+        "Cookie": f"MUSIC_U={cookie}",
+        "Referer": OFFICIAL_REFERER,
+        "User-Agent": DEFAULT_USER_AGENT,
+    }
+
+
+def _media_headers(cookie: str = "") -> dict:
+    """音频下载请求头：外链入口同样要 cookie + referer，缺了会被挡回 403。"""
+    headers = {"Referer": MEDIA_REFERER, "User-Agent": MEDIA_USER_AGENT}
+    if cookie:
+        headers["Cookie"] = f"MUSIC_U={cookie}"
+    return headers
+
+
 def _download_file(
     url: str,
     dest_dir: str,
     timeout: float,
     *,
-    referer: str = "",
+    headers: Optional[dict] = None,
     prefix: str = "netease",
 ) -> Tuple[str, str]:
     """流式下载到 ``dest_dir``，限制 60MB。返回 ``(本地路径, 失败原因)``。"""
@@ -322,14 +352,14 @@ def _download_file(
         dest_dir,
         f"{prefix}_{time.strftime('%H%M%S')}_{os.getpid()}_{int(time.time() * 1000) % 100000}{_suffix_from_url(url)}",
     )
-    headers = {"User-Agent": DEFAULT_USER_AGENT}
-    if referer:
-        headers["Referer"] = referer
+    request_headers = {"User-Agent": DEFAULT_USER_AGENT}
+    if headers:
+        request_headers.update(headers)
 
     written = 0
     expected = 0
     try:
-        request = urllib.request.Request(url, headers=headers, method="GET")
+        request = urllib.request.Request(url, headers=request_headers, method="GET")
         with urllib.request.urlopen(request, timeout=timeout) as response:
             status = int(getattr(response, "status", 200) or 200)
             if status != 200:
@@ -433,7 +463,11 @@ def download_by_id(
     dest_dir: Optional[str] = None,
     timeout: float = 120,
 ) -> Tuple[Optional[str], str, bool]:
-    """走官方接口取整首歌并下载到本地。
+    """走官方接口判定"是不是整首"，再从外链入口把整首下到本地。
+
+    接口返回的 ``data[0].url`` 只用来确认"确实给了整首"，**不拿来下载**
+    （实测该 CDN 直链 403），下载固定走外链跳转入口；接口判定失败（没链接、
+    只给试听、时长不够）直接返回，不再退回外链碰运气。
 
     Args:
         song_id: 网易云数字歌曲 id。
@@ -459,11 +493,7 @@ def download_by_id(
 
     dest = dest_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_audio")
     url = f"{OFFICIAL_URL}?ids=[{song_id}]&br={br}"
-    headers = {
-        "Cookie": f"MUSIC_U={cookie}",
-        "Referer": OFFICIAL_REFERER,
-        "User-Agent": DEFAULT_USER_AGENT,
-    }
+    headers = _api_headers(cookie)
 
     status, payload, error = _fetch_json(url, headers, timeout)
     if error:
@@ -480,15 +510,29 @@ def download_by_id(
         )
         return None, reason, is_trial
 
+    # 接口判定通过：它给的直链不用，统一换成外链跳转入口（urllib 默认跟随 302）
+    logger.debug("接口直链不可用，改用外链下载: id=%s api_link=%s", song_id, link)
+    media_url = MEDIA_OUTER_URL.format(song_id=song_id)
     path, download_reason = _download_file(
-        link,
+        media_url,
         dest,
         timeout,
-        referer=OFFICIAL_REFERER,
+        headers=_media_headers(cookie),
         prefix=f"nt_{song_id}",
     )
     if not path:
         return None, download_reason or REASON_DOWNLOAD, False
+
+    length = _probe_duration_ms(path)
+    if length is None:
+        logger.warning("下载完量不到真实时长，按失败处理: id=%s file=%s", song_id, path)
+        _remove_quietly(path)
+        return None, REASON_DL_NO_TIME, False
+    if length < MIN_FULL_LENGTH_MS:
+        seconds = int(round(length / 1000))
+        logger.warning("下载到的不是整首: id=%s 时长=%sms", song_id, length)
+        _remove_quietly(path)
+        return None, REASON_DL_TOO_SHORT.format(seconds=seconds), True
     return path, "", False
 
 

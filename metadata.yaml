@@ -1,6 +1,6 @@
 name: astrbot_plugin_chorus_cover
 display_name: 副歌翻唱（自维护）
 desc: RVC 副歌翻唱（含 SVC、SoulX-SVCVC 参考音色）的自维护分支，对话出口统一交给人格模型，进度与重试默认静音
-version: v0.2.1
+version: v0.2.2
 author: void-HaoNan
 repo: "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover"
