@@ -64,7 +64,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱（自维护分支，基于 matsuko_cover 2.13.0，AGPL-3.0）：对话出口统一走模型、失败结果结构化",
-    "0.3.0",
+    "0.3.1",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -164,6 +164,8 @@ class MusicPlugin(Star):
         
         self.default_api_type = config.get("default_api_type", "rvc")
         self.default_model_index = config.get("default_model_index", 1)
+        # 插件设置里下拉选的默认 RVC 音色（空串表示不指定，沿用 default_model_index）
+        self.rvc_default_model = str(config.get("rvc_default_model", "") or "").strip()
         self.default_key_shift = config.get("default_key_shift", 0)
         self.f0_method = config.get("f0_method", "rmvpe")
         self.svc_f0_method = config.get("svc_f0_method", "fcpe")
@@ -1775,6 +1777,29 @@ class MusicPlugin(Star):
         
         return None
 
+    def _configured_rvc_model_index(self, api_type: str = "rvc") -> Optional[int]:
+        """把配置里下拉选的 rvc_default_model 换成当前 RVC 模型列表里的序号。
+
+        只在调用方确认「用户没有显式指定模型名或序号」之后调用，且只对 RVC 生效。
+        下拉选的模型不在当前列表里（还没 /刷新rvc模型、模型被删了）时返回 None，
+        调用方回落到 default_model_index / 偏好序号；这里只记一条 warning。
+        """
+        if str(api_type or "").lower() != "rvc":
+            return None
+        configured = str(getattr(self, "rvc_default_model", "") or "").strip()
+        if not configured:
+            return None
+        target = configured.lower()
+        for model in self.get_models_detailed_list("rvc"):
+            if target in (model["filename"].lower(), model["name"].lower(), model["alias"].lower()):
+                return model["index"]
+        logger.warning(
+            f"rvc_default_model={configured} 不在当前 RVC 模型列表里，"
+            f"回落到 default_model_index={self.default_model_index}；"
+            "可以用 /刷新rvc模型 重新获取模型列表"
+        )
+        return None
+
     def _parse_gender_map(self, entries: list) -> Dict[str, str]:
         result = {}
         for entry in entries:
@@ -2998,7 +3023,7 @@ class MusicPlugin(Star):
 
     async def _execute_local_cover(self, event: AstrMessageEvent, audio_path: str,
                                     model_name: Optional[str] = None,
-                                    model_index: int = 1,
+                                    model_index: Optional[int] = None,
                                     api_type: str = "rvc",
                                     key_shift: Optional[int] = 0):
         """本地音频翻唱核心执行逻辑"""
@@ -3025,6 +3050,10 @@ class MusicPlugin(Star):
                 f"请先使用 {refresh_cmd}。"
             ))
             return
+        
+        # 配置下拉选的默认 RVC 音色：调用方没给模型名也没给序号时优先用它
+        if not model_name and model_index is None:
+            model_index = self._configured_rvc_model_index(api_type) or 1
         
         if model_name:
             matched = self._find_model_index_by_name(model_name, api_type)
@@ -3826,6 +3855,12 @@ class MusicPlugin(Star):
                 fallback = available_engines[0]
                 return f"⚠️ {actual_api_type.upper()} 引擎已在配置中禁用。\n当前可用的翻唱引擎: {', '.join(available_engines).upper()}\n请指定可用的引擎，例如 api_type='{fallback}'"
             
+            # 配置下拉选的默认音色：用户没显式指定模型名/序号时优先用它
+            if not model_name and not model_index:
+                configured_default_index = self._configured_rvc_model_index(actual_api_type)
+                if configured_default_index:
+                    actual_model_index = configured_default_index
+            
             models_info = self.get_models_detailed_list(actual_api_type)
             actual_model_display = ""
             artist_pref_hint = ""
@@ -4072,6 +4107,12 @@ class MusicPlugin(Star):
             # 偏好加载后可能覆盖了 api_type，需要再次验证可用性
             if actual_api_type and actual_api_type.lower() not in available_engines:
                 return f"⚠️ {actual_api_type.upper()} 引擎已在配置中禁用。\n当前可用的翻唱引擎: {', '.join(available_engines).upper()}\n请指定可用的引擎，例如 api_type='{available_engines[0]}'"
+            
+            # 配置下拉选的默认音色：用户没显式指定序号时优先用它
+            if not model_index:
+                configured_default_index = self._configured_rvc_model_index(actual_api_type)
+                if configured_default_index:
+                    actual_model_index = configured_default_index
             
             actual_music_source = self._resolve_music_source(music_source)
 
@@ -4528,7 +4569,7 @@ class MusicPlugin(Star):
     async def cover_absolute_path_audio(self, event: AstrMessageEvent,
                                          audio_path: str,
                                          model_name: Optional[str] = None,
-                                         model_index: int = 1,
+                                         model_index: Optional[int] = None,
                                          api_type: Optional[str] = None,
                                          key_shift: Optional[int] = None) -> str:
         '''将指定绝对路径的音频文件进行AI翻唱/音色转换。
@@ -4580,6 +4621,10 @@ class MusicPlugin(Star):
             else:
                 available = await self.get_available_models(event, actual_api_type)
                 return f"❌ 未找到匹配的模型: '{model_name}'\n\n可用模型:\n{available}"
+        
+        # 没显式指定序号时，优先用配置下拉选的默认 RVC 音色
+        if actual_model_index is None:
+            actual_model_index = self._configured_rvc_model_index(actual_api_type) or 1
         
         models_info = self.get_models_detailed_list(actual_api_type)
         for m in models_info:
@@ -4650,7 +4695,7 @@ class MusicPlugin(Star):
     @filter.llm_tool(name="cover_local_audio")
     async def cover_local_audio(self, event: AstrMessageEvent,
                                  model_name: Optional[str] = None,
-                                 model_index: int = 1,
+                                 model_index: Optional[int] = None,
                                  api_type: Optional[str] = None,
                                  key_shift: Optional[int] = None) -> str:
         '''将用户发送的本地音频文件或语音消息进行AI翻唱/音色转换。
@@ -4700,6 +4745,10 @@ class MusicPlugin(Star):
             else:
                 available = await self.get_available_models(event, actual_api_type)
                 return f"❌ 未找到匹配的模型: '{model_name}'\n\n可用模型:\n{available}"
+        
+        # 没显式指定序号时，优先用配置下拉选的默认 RVC 音色
+        if actual_model_index is None:
+            actual_model_index = self._configured_rvc_model_index(actual_api_type) or 1
         
         models_info = self.get_models_detailed_list(actual_api_type)
         for m in models_info:

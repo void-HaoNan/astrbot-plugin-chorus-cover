@@ -3,6 +3,31 @@
 本文件记录 **astrbot_plugin_chorus_cover**（副歌翻唱 · 自维护分支）的变更。
 上游 `sdfsfsk/matsuko_cover` 的历史日志请见上游仓库，此处只记本分支的差异。
 
+## v0.3.1（2026-10-27）
+
+新增 RVC 默认音色下拉配置 `rvc_default_model`，不用再靠序号记音色。
+
+### 新增
+
+- **`_conf_schema.json`**：新增 `rvc_default_model`（`string`，下拉），`options` 固定为 `Yuuka.pth`、`ainuo.pth`、`guanguanV1.pth`、`keruanV1.pth`、`kikiV1.pth`、`youzhanv2-xi.pth`、`三月七.pth`、`穹.pth` 共 8 个文件名；`default` 为空串，表示不指定、沿用序号逻辑。
+- **`main.py`**：读取 `self.rvc_default_model`；新增 `_configured_rvc_model_index()`，按文件名 / 去扩展名 / 别名做精确匹配，把下拉值换成当前模型列表里的序号。
+- 生效位置：`smart_cover`、`batch_cover`、`cover_local_audio` / `cover_absolute_path_audio` 以及本地音频执行入口，只在用户没有显式给出模型名或序号时套用。
+
+### 优先级
+
+- 用户显式指定的模型名/序号 > `rvc_default_model` > 用户偏好 / `default_model_index`。
+- 仅对 RVC 生效；下拉选的模型不在当前列表里（没 `/刷新rvc模型`、模型被删）时回落到原来的序号逻辑，并记一条 `logger.warning`。
+- 命令与 LLM 工具里已经显式指定模型的分支未改动。
+
+### 版本
+
+- `metadata.yaml` 与 `main.py` 的 `@register` 版本号升到 `0.3.1`，README 配置表与更新日志同步。
+
+### 验证
+
+- `py_compile main.py` 通过；`_conf_schema.json` 可被 `json.loads` 解析，新项存在；临时脚本确认 `options` 为 8 个、顺序与要求一致、`default` 为空串，跑完已删除。
+- 已同步改动的 `.py` / `.json` / `.md` / `.yaml` 到线上插件副本，逐文件 SHA256 对齐；未重启 AstrBot。
+
 ## v0.3.0（2026-10-27）
 
 彻底移除洛雪（LX-Source），音源只剩网易云官方接口 + cookie；QQ 音源下线。

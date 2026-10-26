@@ -265,6 +265,22 @@
     "hint": "当用户未指定时使用的默认模型序号（从1开始）",
     "default": 1
   },
+  "rvc_default_model": {
+    "description": "选择音色模型（RVC 默认音色）",
+    "type": "string",
+    "hint": "优先使用这里选中的模型文件；留空则沿用 default_model_index 的序号逻辑。仅对 RVC 生效，模型需先通过 /刷新rvc模型 出现在列表里；选了但列表里找不到同名模型时会回落到序号逻辑，并在日志里记一条警告。",
+    "options": [
+      "Yuuka.pth",
+      "ainuo.pth",
+      "guanguanV1.pth",
+      "keruanV1.pth",
+      "kikiV1.pth",
+      "youzhanv2-xi.pth",
+      "三月七.pth",
+      "穹.pth"
+    ],
+    "default": ""
+  },
   "default_key_shift": {
     "description": "默认音调调整",
     "type": "int",

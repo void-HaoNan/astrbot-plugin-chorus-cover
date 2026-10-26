@@ -18,7 +18,7 @@
 
 适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的 AI 翻唱插件，支持 **RVC、SVC-Fusion、SoulX-SVCVC** 三种语音转换后端，以及网易云音乐、本地音频和 LLM 工具调用（QQ 音源已于 0.3.0 下线）。
 
-> 当前版本：**v0.3.0**（自维护分支，基线为上游 v2.13.0）
+> 当前版本：**v0.3.1**（自维护分支，基线为上游 v2.13.0）
 >
 > 许可证：**GNU AGPL-3.0**
 >
@@ -211,6 +211,7 @@ SoulX-SVCVC 使用参考音频进行零样本音色转换，不需要训练 `.pt
 | `svc_base_url` | `http://127.0.0.1:9999/` | SVC-Fusion 中间层 |
 | `svcvc_base_url` | `http://127.0.0.1:6767/` | SoulX-SVCVC 中间层 |
 | `enable_rvc` | `true` | 启用 RVC |
+| `rvc_default_model` | 空 | 下拉选择默认 RVC 音色模型（8 个固定选项）；留空则沿用 `default_model_index` 序号 |
 | `enable_svc` | `true` | 启用 SVC-Fusion |
 | `enable_svcvc` | `false` | 启用 SoulX-SVCVC |
 | `enable_qqmusic` | `false` | 已下线，保留只为兼容旧配置 |
@@ -356,6 +357,11 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 检查 `svcvc_random_seed` 是否关闭。歌曲内容、参考音色、种子、采样步数、CFG、升降调或模型资产变化都会生成新的缓存键。
 
 ## 更新日志
+
+### v0.3.1（本分支）
+
+- 新增配置项 `rvc_default_model`：在 WebUI 插件设置里用下拉框直接选默认 RVC 音色（固定 8 个模型），不用再记 `default_model_index` 是第几个。
+- 优先级：用户显式指定的模型名/序号 > `rvc_default_model` > 用户偏好/`default_model_index`；下拉选的模型不在当前列表里时回落到序号逻辑，并记一条 warning。仅对 RVC 生效，SVC/SoulX 不受影响。
 
 ### v0.3.0（本分支）
 
