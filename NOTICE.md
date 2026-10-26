@@ -33,8 +33,9 @@
    - 失败强制发送整段错误文本改为 `outbound.say(event, "failed", …)`，技术细节只写日志；
    - `_smart_cover_async` 与批量翻唱的失败判断只认 `❌` / `FAIL:` 明确标记，删掉关键词匹配；
    - 失败路径不再额外触发一次 LLM 说话，避免同一任务两条回复。
-3. **`api.py`**：新增 `_extract_mid()` 修复新版返回结构下 `'str' object has no attribute 'mid'` 的崩溃；删除已无法解析的备选接口 `api.lolimi.cn`（2026-10-27 实测 `getaddrinfo failed`）。
+3. **`api.py`**：新增 `_extract_mid()` 修复新版返回结构下 `'str' object has no attribute 'mid'` 的崩溃；删除已无法解析的备选音源接口。
 4. **`_conf_schema.json`**：新增 `notify_progress`、`notify_retry` 两个开关（缺省 `false`）。
 5. **元数据与文档**：`metadata.yaml` 改为本分支的名字/版本/作者/仓库；新增 `CHANGELOG.md` 与 `NOTICE.md`；`README.md` 开头增加"这是自维护分支"一节。README 其余内容沿用上游。
+6. **v0.3.0（2026-10-27）**：删除洛雪（LX-Source）兜底与 `download_via_lx` / `build_lx_url`，只保留网易云官方接口 + cookie；QQ 音源下线，搜歌与取歌都只走网易云。
 
 本分支**不再跟随上游更新**。上游假如更新了同名功能，本分支不会自动合并。

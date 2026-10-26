@@ -10,14 +10,15 @@
   3. 失败**只发一句话**：重试次数、错误码、后端返回等技术细节只写日志，不再整段甩给用户。
   4. 失败判断改为明确标记（`❌` / `FAIL:` 开头），不再用"失败""错误""超时"等关键词猜，避免正常文案被误判。
   5. 修复 QQ 音乐 mid 解析（新版返回结构里 mid 已是字符串导致的 `'str' object has no attribute 'mid'`）。
-  6. 移除已失效的备选音源 `api.lolimi.cn`（2026-10-27 实测域名解析失败），不再每次重试白等网络超时。
+  6. 移除已失效的备选音源接口（2026-10-27 实测域名解析失败），不再每次重试白等网络超时。
+  7. **0.3.0 起彻底移除洛雪（LX-Source）兜底**：只保留网易云官方接口 + `MUSIC_U` cookie，**QQ 音源同步下线**，搜歌与取歌都只走网易云，取不到整首直接失败。
 - **维护方式**：**本分支不再跟随上游更新**，只按自己需要打补丁；上游的新功能不会自动合并进来。想要上游版本请直接使用上游仓库。
 
 ---
 
-适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的 AI 翻唱插件，支持 **RVC、SVC-Fusion、SoulX-SVCVC** 三种语音转换后端，以及网易云音乐、QQ 音乐、本地音频和 LLM 工具调用。
+适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的 AI 翻唱插件，支持 **RVC、SVC-Fusion、SoulX-SVCVC** 三种语音转换后端，以及网易云音乐、本地音频和 LLM 工具调用（QQ 音源已于 0.3.0 下线）。
 
-> 当前版本：**v0.2.2**（自维护分支，基线为上游 v2.13.0）
+> 当前版本：**v0.3.0**（自维护分支，基线为上游 v2.13.0）
 >
 > 许可证：**GNU AGPL-3.0**
 >
@@ -27,7 +28,7 @@
 
 | 功能 | RVC | SVC-Fusion | SoulX-SVCVC |
 |---|:---:|:---:|:---:|
-| 网易云 / QQ 音乐点歌 | ✅ | ✅ | ✅ |
+| 网易云点歌（唯一音源） | ✅ | ✅ | ✅ |
 | 本地音频翻唱 | ✅ | ✅ | ✅ |
 | LLM 智能点歌 | ✅ | ✅ | ✅ |
 | 模型/音色列表和别名 | ✅ | ✅ | ✅ |
@@ -41,7 +42,6 @@
 
 - 搜索、选歌、选模型、推理和发送结果的完整工作流。
 - 自动识别 QQ 官方机器人，使用原生按钮选歌、选音色、翻页和取消；按钮不可用时发送完整文字菜单。
-- QQ 音乐风控重试与可选第三方 VIP 播放地址 API。
 - RVC/SVC 的 F0、检索率、混响、延迟、人声/伴奏音量等参数。
 - MSST 模型列表、默认分离模型切换和分离质量参数。
 - 翻唱任务查询、取消、批量翻唱、用户偏好和统计。
@@ -83,7 +83,6 @@ pip install -r astrbot_plugin_matsuko_cover/requirements.txt
 ```text
 gradio_client
 aiohttp
-qqmusic-api-python
 ```
 
 ## QQ 官方机器人交互
@@ -92,7 +91,7 @@ qqmusic-api-python
 
 根据官方 [Markdown 消息文档](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/type/markdown.html) 的 2026-04-23 更新，**QQ群和单聊已开放自定义 Markdown，无需单独申请模板**；频道场景仍需账号开通对应能力。卡片使用标题、加粗序号、分隔线和状态字段，歌曲名与模型名会单独转义，避免特殊字符破坏布局。
 
-使用 `/rvc`、`/svc`、`/svcvc` 或 QQ 音乐的 `/qqrvc`、`/qqsvc`、`/qqsvcvc` 点歌时：
+使用 `/rvc`、`/svc`、`/svcvc` 点歌时（0.3.0 起只有网易云一个音源）：
 
 1. 机器人在一条消息中展示歌曲列表、选择按钮和操作说明。
 2. 选歌后展示模型/参考音色列表及对应按钮。
@@ -120,7 +119,7 @@ qqmusic-api-python
 | 入口 | 展示内容 |
 |---|---|
 | `/翻唱帮助` | 翻唱用法，以及音色刷新、任务、统计快捷按钮 |
-| `/rvc`、`/svc`、`/svcvc` 及对应 QQ 音乐命令 | 无参数时展示用法卡片；点歌时展示歌曲选择、音色选择和开始翻唱卡片 |
+| `/rvc`、`/svc`、`/svcvc` | 无参数时展示用法卡片；点歌时展示歌曲选择、音色选择和开始翻唱卡片 |
 | `/刷新rvc模型`、`/刷新svc模型`、`/刷新svcvc音色` | 音色列表卡片 |
 | `/列出msst模型`、`/列出svcvc分离模型` | 分离模型列表卡片；管理员切换成功后也显示结果卡片 |
 | `/查看翻唱缓存`、`/清理翻唱缓存` | 缓存统计或清理结果卡片，保留原有管理员权限 |
@@ -214,14 +213,11 @@ SoulX-SVCVC 使用参考音频进行零样本音色转换，不需要训练 `.pt
 | `enable_rvc` | `true` | 启用 RVC |
 | `enable_svc` | `true` | 启用 SVC-Fusion |
 | `enable_svcvc` | `false` | 启用 SoulX-SVCVC |
-| `enable_qqmusic` | `true` | 启用 QQ 音乐 |
-| `disable_netease` | `false` | 禁用网易云点歌 |
-| `disable_qqmusic` | `false` | 搜歌只走网易云、不碰 QQ 音乐（避免拿回只能试听的 mid） |
+| `enable_qqmusic` | `false` | 已下线，保留只为兼容旧配置 |
+| `disable_netease` | `false` | 已无效（只剩网易云一条路，开启也按网易云继续） |
+| `disable_qqmusic` | `true` | 已锁死只用网易云：搜歌与取歌都只走网易云官方接口 + cookie |
 | `netease_cookie` | 空 | 网易云 `MUSIC_U` 值，官方接口取整首必需；只存本机 |
 | `netease_quality` | `320` | 网易云取歌音质，只支持 `128` / `192` / `320` |
-| `lx_source_base` | `http://127.0.0.1:1011` | 洛雪源服务地址（只在官方接口失败时兜底） |
-| `lx_source_key` | `U4sEbWlFA+3zgEiG8/MItw==` | 洛雪源认证头 `X-LxM-Auth` |
-| `enable_lx_fallback` | `true` | 官方接口取不到整首时启用洛雪兜底 |
 | `alert_admin_on_cookie_expired` | `true` | cookie 连续失效时提醒管理员 |
 | `cookie_alert_interval_hours` | `6` | 同一失效状态的最小提醒间隔（小时） |
 | `enable_progress_bar` | `true` | 将后端进度发到聊天 |
@@ -242,12 +238,12 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 2. 插件调官方接口 `GET https://music.163.com/api/song/enhance/player/url?ids=[<id>]&br=<码率>` **只为判定**；判定通过后不用它给的 `data[0].url`（该 CDN 直链实测 403），改从外链跳转入口 `GET https://music.163.com/song/media/outer/url?id=<id>.mp3`（带同样的 `Cookie` / `Referer` / `User-Agent`，跟随 302）流式下载（单文件上限 60MB，落在 `temp_audio/`，任务结束自动清理）。
 3. **整首判定**（五条全满足才算成功）：HTTP 200、`code == 200`、`data[0].url` 非空、`data[0].freeTrialInfo` 为 `null`、`data[0].time >= 80000`（毫秒）。只给试听片段的返回会被判失败，不会送进翻唱流程；判定失败也不会再退回外链重试。
 4. 下载完成后再用 `ffprobe` 量一次真实时长，不足 80000ms 的删文件判失败（原因写“下载到的不是整首（时长 xx 秒）”）；下载请求失败时原因里带 HTTP 状态。
-5. 官方接口失败（没 cookie、cookie 失效、只给试听、网络错误）后，若 `enable_lx_fallback` 打开，再用同一个歌曲 id 去洛雪源 `GET <lx_source_base>/link/wy/<id>/<音质>` 兜底。洛雪返回体通常只有链接、没有时长，所以插件下完文件会用 `ffprobe` 量真实时长，同样按 `>= 80 秒` 过滤试听；量不到时长按失败处理。
+5. 0.3.0 起没有洛雪兜底，也没有任何第三方音源：官方接口取不到整首（没 cookie、cookie 失效、只给试听、网络错误）就直接失败并说明原因，绝不把试听片段交给中间层。
 6. 连续 3 次取歌都因为 cookie 相关问题（没配置、HTTP 401、`code != 200`、只给试听）失败时，私聊 AstrBot 全局配置里的 `admins_id` 提醒更新 cookie；找不到管理员就发回触发点歌的会话。同一失效状态按 `cookie_alert_interval_hours` 去重，取歌成功后状态清空。
 
-**统一取歌顺序**（卡片选歌、命令点歌、LLM 工具、批量翻唱全部共用 `_prepare_song_audio`，任何入口都不会再把 id / mid 原样交给中间层）：本地文件直通 → 纯数字按网易云 id（官方接口 → 洛雪 `/link/wy`）→ 11~14 位字母数字按 QQ mid（洛雪 `/link/tx` → QQ 官方库 → 按歌名回网易云搜索）→ 其它当歌名（先搜网易云拿数字 id，搜不到再洛雪 `/link/wy/<歌名>`）；每一步下完都用 `ffprobe` 卡 80 秒，60 秒试听一律判失败，失败原因逐层串成一句中文。开启 `disable_qqmusic` 后搜歌阶段直接跳过 QQ（`/qqrvc` 等 QQ 入口会提示改用网易云命令）。
+**统一取歌顺序**（卡片选歌、命令点歌、LLM 工具、批量翻唱全部共用 `_prepare_song_audio`，任何入口都不会再把 id / mid 原样交给中间层）：本地文件直通 → 纯数字按网易云 id（官方接口 + cookie）→ 11~14 位字母数字的旧 QQ mid（不再碰任何 QQ 音源，直接按歌名去网易云搜，搜不到就失败）→ 其它当歌名（先搜网易云拿数字 id，再回上一步）；每一步下完都用 `ffprobe` 卡 80 秒，60 秒试听一律判失败，失败原因串成一句中文。
 
-> 洛雪兜底依赖本机 `ffprobe`（通常随 `ffmpeg` 一起安装）。没有 `ffprobe` 时兜底一律按"无法确认是整首"失败，不会把可疑片段交给中间层。
+> 整首闸门依赖本机 `ffprobe`（通常随 `ffmpeg` 一起安装）。没有 `ffprobe` 时一律按"无法确认是整首"失败，不会把可疑片段交给中间层。
 
 ### SoulX 参数
 
@@ -289,10 +285,7 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 | `/rvc <歌名> [升降调]` | RVC + 网易云点歌 |
 | `/svc <歌名> [升降调]` | SVC-Fusion + 网易云点歌 |
 | `/svcvc <歌名> [升降调]` | SoulX-SVCVC + 网易云点歌 |
-| `/qqrvc <歌名> [升降调]` | RVC + QQ 音乐 |
-| `/qqsvc <歌名> [升降调]` | SVC-Fusion + QQ 音乐 |
-| `/qqsvcvc <歌名> [升降调]` | SoulX-SVCVC + QQ 音乐 |
-| `/qq点歌 <关键词>` | 只搜索 QQ 音乐 |
+| `/qqrvc` 等 QQ 入口 | 已于 0.3.0 下线（QQ 音源下线），不再提供 |
 | `/本地翻唱` | 使用最近上传/缓存的本地音频 |
 
 ### 任务
@@ -309,7 +302,7 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 
 插件提供以下主要 Function Calling 工具：
 
-- `search_music`：搜索网易云或 QQ 音乐。
+- `search_music`：搜索网易云音乐。
 - `rvc_cover`：使用 RVC 翻唱。
 - `svc_cover`：使用 SVC-Fusion 翻唱。
 - `svcvc_cover`：使用 SoulX 参考音色翻唱。
@@ -323,7 +316,7 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 示例：
 
 ```text
-用甘城喵音色从 QQ 音乐翻唱《起风了》
+用甘城喵音色从网易云翻唱《起风了》
 用 RVC 第 2 个模型翻唱《晴天》，升 2 调
 列出现在可用的 SoulX 参考音色
 ```
@@ -334,7 +327,7 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 - `progress_update_interval` 控制聊天提示频率，避免刷屏。
 - 中间层返回 `cache_hit` 时，插件会提示缓存命中并直接发送结果。
 - 默认先发送 QQ 语音；语音发送失败时无论 `enable_send_file` 是否开启都会继续发送音频文件，避免结果丢失。
-- QQ 音乐和网易云都由插件先下载成整首文件，再提交给中间层；网易云用官方接口判定、外链入口下载（`MUSIC_U` cookie），洛雪源只在失败时兜底，试听片段会被过滤掉。
+- 网易云由插件先下载成整首文件，再提交给中间层；用官方接口判定、外链入口下载（`MUSIC_U` cookie），试听片段会被过滤掉。0.3.0 起没有任何备用音源。
 
 ## 常见问题
 
@@ -350,19 +343,25 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 
 请使用带 `/soulx_svc_convert_path` 接口的 AMD 补丁和最新版 SVCVC-API-SVF；该接口避免在同一台机器上通过 Gradio 重复下载大型 WAV。
 
-### QQ 音乐无法获取播放地址
+### QQ 音乐的入口和配置怎么没了
 
-普通歌曲优先使用 QQ 音乐接口。VIP/付费歌曲可选配置 `third_party_api_key`；默认值为空，仓库不包含任何 API 密钥。频繁触发风控时可调整重试设置。
+0.3.0 起 QQ 音源已下线：`/qqrvc` 等命令不再提供，`enable_qqmusic`、`disable_qqmusic`、`third_party_api_key` 等配置保留只为兼容旧配置，不再影响取歌。所有点歌一律走网易云官方接口 + `MUSIC_U` cookie。
 
 ### 网易云提示“拿不到整首歌”
 
-先看日志里两条路的失败原因：`netease_cookie` 是否填写且没过期（重新登录复制 `MUSIC_U`）、`netease_quality` 是否为 `128` / `192` / `320`、洛雪兜底地址和认证头是否对上、本机有没有 `ffprobe`。插件只接受“整首”（≥ 80 秒且不是试听片段），60 秒的试听返回会被直接判失败。接口判定通过后用外链入口 `song/media/outer/url` 下载（不要再用接口给的 CDN 直链，那条会 403），下载失败时日志/原因里会带 HTTP 状态方便定位。
+先看日志里的失败原因：`netease_cookie` 是否填写且没过期（重新登录复制 `MUSIC_U`）、`netease_quality` 是否为 `128` / `192` / `320`、本机有没有 `ffprobe`。插件只接受“整首”（≥ 80 秒且不是试听片段），60 秒的试听返回会被直接判失败。接口判定通过后用外链入口 `song/media/outer/url` 下载（不要再用接口给的 CDN 直链，那条会 403），下载失败时日志/原因里会带 HTTP 状态方便定位。
 
 ### SoulX 无法命中缓存
 
 检查 `svcvc_random_seed` 是否关闭。歌曲内容、参考音色、种子、采样步数、CFG、升降调或模型资产变化都会生成新的缓存键。
 
 ## 更新日志
+
+### v0.3.0（本分支）
+
+- 移除洛雪（LX-Source）兜底：删除洛雪下载与地址拼接函数，以及洛雪地址、认证头、兜底开关三项配置。
+- 只用网易云官方接口 + `MUSIC_U` cookie 取整首；QQ 音源下线，搜歌阶段不再使用 QQ，`/qqrvc` 等 QQ 入口不再提供。
+- 旧的 QQ mid 输入改为“按歌名去网易云搜”，搜不到直接失败。
 
 ### v2.10.4
 

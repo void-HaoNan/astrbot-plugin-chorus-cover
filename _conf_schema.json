@@ -20,7 +20,7 @@
   "default_api": {
     "description": "默认使用的音乐 API",
     "type": "string",
-    "hint": "可选 'netease', 'netease_nodejs' 或 'qqmusic'。推荐使用 'netease_nodejs' 或 'qqmusic'",
+    "hint": "0.3.0 起只支持网易云：'netease' 走官方接口直连，'netease_nodejs' 走 Node.js 中转；填 'qqmusic' 或其它值一律按网易云处理（QQ 音源已下线）。",
     "default": "netease_nodejs"
   },
   "nodejs_base_url": {
@@ -30,41 +30,41 @@
     "default": "https://wyy.xhily.com"
   },
   "enable_qqmusic": {
-    "description": "启用QQ音乐搜索功能",
+    "description": "启用QQ音乐搜索功能（已下线，不再生效）",
     "type": "bool",
-    "hint": "开启后可以使用QQ音乐搜索歌曲进行翻唱。支持LLM工具调用和手动指令调用。",
-    "default": true
+    "hint": "QQ 音源已于 0.3.0 下线，此项保留只为兼容旧配置，开关无论怎么写都不会再搜 QQ 音乐。",
+    "default": false
   },
   "qqmusic_retry_on_ratelimit": {
-    "description": "QQ音乐触发风控时自动重试",
+    "description": "QQ音乐触发风控时自动重试（已下线，不再生效）",
     "type": "bool",
-    "hint": "开启后，当QQ音乐API触发风控（如'需进行登录或者安全验证'）时，会自动等待后重试。关闭则立即返回错误提示。",
-    "default": true
+    "hint": "QQ 音源已下线，此项保留只为兼容旧配置，不再有任何效果。",
+    "default": false
   },
   "qqmusic_retry_max_attempts": {
-    "description": "QQ音乐风控重试最大次数",
+    "description": "QQ音乐风控重试最大次数（已下线，不再生效）",
     "type": "int",
-    "hint": "当QQ音乐触发风控时，最多重试的次数。每次重试间隔5秒。建议设置在2-5次之间。",
+    "hint": "QQ 音源已下线，此项保留只为兼容旧配置，不再有任何效果。",
     "default": 3,
     "minimum": 1,
     "maximum": 10
   },
   "disable_netease": {
-    "description": "禁用网易云音乐点歌",
+    "description": "禁用网易云音乐点歌（已无效）",
     "type": "bool",
-    "hint": "开启后，网易云音乐功能将被完全禁用（包括LLM自动调用翻唱工具和手动命令），所有点歌请求将强制使用QQ音乐。推荐开启以获取更全的音乐版权。",
+    "hint": "0.3.0 起只剩网易云这一条取歌链路，开启此项也会按网易云继续，仅记一条警告日志。",
     "default": false
   },
   "disable_qqmusic": {
-    "description": "搜索只走网易云（不用 QQ 音乐）",
+    "description": "只用网易云搜歌（已锁死）",
     "type": "bool",
-    "hint": "开启后，搜歌阶段不再使用 QQ 音乐，一律用网易云搜索，避免拿回 QQ 音乐的 mid（mid 多半只能取到 60 秒试听）。关掉后 QQ 音乐搜索恢复可用；两个搜索源不能同时禁用，同时开启时按网易云处理。",
-    "default": false
+    "hint": "已锁死只用网易云：QQ 音源下线，搜歌和取歌都只走网易云官方接口 + cookie。此项固定为 true，改成 false 也不会再启用 QQ。",
+    "default": true
   },
   "netease_cookie": {
     "description": "网易云 MUSIC_U（取整首歌必需）",
     "type": "string",
-    "hint": "在浏览器登录 music.163.com 后，从开发者工具 → Application → Cookies 里复制 MUSIC_U 的值（只填值，不要带 'MUSIC_U=' 前缀）。插件只保存在本机配置里，不会外传；留空则无法用官方接口取整首，只能靠洛雪兜底。",
+    "hint": "在浏览器登录 music.163.com 后，从开发者工具 → Application → Cookies 里复制 MUSIC_U 的值（只填值，不要带 'MUSIC_U=' 前缀）。插件只保存在本机配置里，不会外传；留空则取不到整首，翻唱会直接失败（0.3.0 起没有备用音源）。",
     "default": ""
   },
   "netease_quality": {
@@ -74,24 +74,6 @@
     "default": 320,
     "minimum": 128,
     "maximum": 320
-  },
-  "lx_source_base": {
-    "description": "洛雪源服务地址（兜底用）",
-    "type": "string",
-    "hint": "官方接口失败后的最后一条路，形如 http://127.0.0.1:1011（不带结尾斜杠也行）。不需要兜底可以留空。",
-    "default": "http://127.0.0.1:1011"
-  },
-  "lx_source_key": {
-    "description": "洛雪源认证头 X-LxM-Auth",
-    "type": "string",
-    "hint": "请求洛雪源服务时要带的认证值，和 lx_source_base 来自同一个服务。留空则不带认证头。",
-    "default": "U4sEbWlFA+3zgEiG8/MItw=="
-  },
-  "enable_lx_fallback": {
-    "description": "启用洛雪源兜底",
-    "type": "bool",
-    "hint": "开启后，官方接口取不到整首（没 cookie、cookie 失效、只给试听等）时会再用同一个歌曲 id 去洛雪源试一次。兜底同样会过滤试听片段，拿不到整首就不提交给中间层。",
-    "default": true
   },
   "alert_admin_on_cookie_expired": {
     "description": "网易云 cookie 连续失效时提醒管理员",
@@ -140,19 +122,19 @@
   "enable_rvc": {
     "description": "启用RVC推理引擎",
     "type": "bool",
-    "hint": "开启后允许使用RVC模型进行翻唱（包括命令/rvc、/qqrvc、LLM工具rvc_cover、smart_cover指定rvc等）。关闭后所有RVC相关功能将被禁用，LLM会收到明确提示并建议使用SVC。",
+    "hint": "开启后允许使用RVC模型进行翻唱（包括命令 /rvc、LLM 工具 rvc_cover、smart_cover指定rvc等）。关闭后所有RVC相关功能将被禁用，LLM会收到明确提示并建议使用SVC。",
     "default": true
   },
   "enable_svc": {
     "description": "启用旧 SVC-Fusion 推理引擎",
     "type": "bool",
-    "hint": "开启后允许使用旧 SVC-Fusion 模型翻唱，包括 /svc、/qqsvc 和 svc_cover；它不是 SoulX-SVCVC。",
+    "hint": "开启后允许使用旧 SVC-Fusion 模型翻唱，包括 /svc 和 svc_cover；它不是 SoulX-SVCVC。",
     "default": true
   },
   "enable_svcvc": {
     "description": "启用 SoulX-SVCVC 参考音色转换",
     "type": "bool",
-    "hint": "开启后允许使用 /svcvc、/qqsvcvc、svcvc_cover、smart_cover 和本地音频入口调用 SoulX-Singer SVC Voice Conversion。",
+    "hint": "开启后允许使用 /svcvc、svcvc_cover、smart_cover 和本地音频入口调用 SoulX-Singer SVC Voice Conversion。",
     "default": false
   },
   "rvc_models_keywords": {
@@ -238,7 +220,7 @@
   "llm_force_mode": {
     "description": "LLM强制模式 - 禁用所有手动命令",
     "type": "bool",
-    "hint": "开启后，/rvc、/svc、/svcvc、/qqrvc、/qqsvc、/qqsvcvc 等手动命令将被禁用，只能通过对话让 LLM 自动调用翻唱工具。",
+    "hint": "开启后，/rvc、/svc、/svcvc 等手动命令将被禁用，只能通过对话让 LLM 自动调用翻唱工具。",
     "default": false
   },
   "enable_smart_cover": {
@@ -304,7 +286,7 @@
   "third_party_api_key": {
     "description": "第三方音乐API密钥 (jkapi.com)",
     "type": "string",
-    "hint": "用于获取QQ音乐付费歌曲的播放链接。注册 https://jkapi.com 后在用户中心获取apiKey。留空则不使用第三方API。",
+    "hint": "QQ 音源已下线，此项保留只为兼容旧配置，不再用于取歌。",
     "default": ""
   },
   "enable_progress_bar": {
@@ -468,7 +450,7 @@
   "music_api_timeout": {
     "description": "音乐搜索接口超时（秒）",
     "type": "int",
-    "hint": "网易云或QQ音乐搜索无响应时的最长等待时间，超时后返回明确错误，避免后台任务永久卡住。",
+    "hint": "网易云搜索无响应时的最长等待时间，超时后返回明确错误，避免后台任务永久卡住。",
     "default": 20,
     "minimum": 5,
     "maximum": 120

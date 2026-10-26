@@ -1,4 +1,4 @@
-"""网易云整首歌下载：官方取直链接口 + 洛雪源兜底（chorus_cover 自维护分支）。
+﻿"""网易云整首歌下载：官方取直链接口 + MUSIC_U cookie（chorus_cover 自维护分支）。
 
 设计约定
 ========
@@ -19,15 +19,9 @@
    入口 ``https://music.163.com/song/media/outer/url?id=<id>.mp3``（``urllib``
    默认跟随 302）；判定失败（比如只给试听）就直接返回，不再退回外链。
    下载完成后同样用 ``ffprobe`` 量一次真实时长，不足 80 秒的删文件判失败。
-   洛雪兜底返回体里通常**没有**
-   ``time`` / ``freeTrialInfo``（它的协议只有 ``data`` 链接和 ``msg``），
-   所以兜底会先按返回体判一次，下完文件再用 ``ffprobe`` 量真实时长，
-   同样按 ``>= 80000ms`` 卡一遍——60 秒试听片段因此在兜底这条路上也过不去。
-   拿不到时长时按失败处理（宁可不出歌，也不把 60 秒片段丢给中间层）。
-4. 洛雪兜底支持多个源：``wy``（网易云）、``tx``（QQ）、``kw`` / ``mg`` / ``kg``。
-   官方接口这条路用数字 id；``tx`` 那种源传的是 QQ mid，所以这里不再强制
-   "纯数字 id"，只拒绝空值和超长串。不管哪个源，下完文件都过同一条 80 秒闸门，
-   ``tx`` 实测只给 60 秒试听，因此会被挡在这道闸门外（这正是要的效果）。
+   拿不到时长时按失败处理（宁可不出歌，也不把 60 秒片段交给中间层）。
+4. 0.3.0 起只保留网易云官方接口这一条路：没有第三方音源兜底，也没有别的
+   取歌入口。取不到整首就失败，不会把试听片段交给中间层。
 """
 
 from __future__ import annotations
@@ -35,14 +29,12 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import shutil
 import subprocess
 import time
 import urllib.error
 import urllib.request
 from typing import Any, Optional, Tuple
-from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +79,6 @@ REASON_DL_NO_TIME = "下载完量不到时长，无法确认是整首"
 REASON_DL_TOO_SHORT = "下载到的不是整首（时长 {seconds} 秒）"
 REASON_CODE = "接口 code={code}"
 REASON_REQUEST_FAILED = "接口请求失败"
-REASON_LX_NO_BASE = "没配置洛雪地址"
-REASON_LX_HTTP = "兜底接口返回 HTTP {status}"
-REASON_LX_CODE = "兜底 code={code}"
-REASON_LX_NO_URL = "兜底没给链接"
-REASON_LX_NO_TIME = "兜底没给时长，无法确认是整首"
 
 
 # ---------------------------------------------------------------------------
@@ -191,12 +178,6 @@ def _suffix_from_url(url: str) -> str:
     if suffix in _AUDIO_SUFFIXES:
         return suffix
     return ".mp3"
-
-
-def _safe_prefix(value: Any) -> str:
-    """把 id / 歌名压成能安全当文件名的一段（非 ASCII 会被丢掉，但不会丢歌）。"""
-    text = re.sub(r"[^0-9A-Za-z_-]+", "", str(value or ""))
-    return text[:48].strip("_-") or "song"
 
 
 def _remove_quietly(path: str) -> None:
@@ -435,24 +416,6 @@ def _probe_duration_ms(path: str) -> Optional[int]:
         return None
 
 
-def build_lx_url(base_url: str, source: str, song_id: str, quality: str = "320k") -> str:
-    """拼洛雪接口地址。
-
-    ``song_id`` 可能是中文歌名（``/link/wy/<歌名>`` 这条兜底），直接拼进 URL 会让
-    ``urllib`` 在发送时抛 UnicodeEncodeError，所以这里按路径段做一次百分号编码。
-    """
-    base = str(base_url or "").strip().rstrip("/")
-    src = str(source or "wy").strip().lower() or "wy"
-    key = quote(str(song_id or "").strip(), safe="")
-    quality_text = str(quality or "320k").strip() or "320k"
-    return f"{base}/link/{src}/{key}/{quality_text}"
-
-
-def probe_duration_ms(path: str) -> Optional[int]:
-    """公开的时长测量（毫秒）：插件侧给 QQ 直链 / 本地文件做 80 秒闸门时调用。"""
-    return _probe_duration_ms(path)
-
-
 # ---------------------------------------------------------------------------
 # 对外入口
 # ---------------------------------------------------------------------------
@@ -535,92 +498,3 @@ def download_by_id(
         return None, REASON_DL_TOO_SHORT.format(seconds=seconds), True
     return path, "", False
 
-
-def download_via_lx(
-    song_id: Any,
-    base_url: str,
-    auth_key: str,
-    quality: str = "320k",
-    dest_dir: Optional[str] = None,
-    timeout: float = 120,
-    source: str = "wy",
-) -> Tuple[Optional[str], str, bool]:
-    """洛雪源兜底：``GET /link/<源>/<id>/<音质>``。
-
-    只用于"官方/QQ 官方库都拿不到"时的最后一条路。返回体通常只有 ``data``
-    （链接）和 ``msg``，所以下完文件后还要量一次真实时长，避免把 60 秒
-    试听片段交出去。
-
-    Args:
-        song_id: 该源自己的标识。``wy`` 是网易云数字 id；``tx`` 是 QQ mid；
-            也允许直接传歌名（洛雪会自己搜），所以这里**不要求纯数字**。
-        source: 洛雪的音源，``wy`` / ``tx`` / ``kw`` / ``mg`` / ``kg``。
-
-    Returns:
-        ``(本地路径 或 None, 失败原因, 是否试听)``。
-    """
-    song_id = str(song_id if song_id is not None else "").strip()
-    source = str(source or "wy").strip().lower() or "wy"
-    base_url = str(base_url or "").strip().rstrip("/")
-    if not song_id or len(song_id) > 200:
-        return None, REASON_BAD_ID, False
-    if not base_url:
-        return None, REASON_LX_NO_BASE, False
-
-    dest = dest_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_audio")
-    url = build_lx_url(base_url, source, song_id, quality)
-    headers = {
-        "X-LxM-Auth": str(auth_key or ""),
-        "User-Agent": DEFAULT_USER_AGENT,
-    }
-
-    status, payload, error = _fetch_json(url, headers, timeout)
-    if error:
-        return None, error, False
-    if status != 200:
-        return None, REASON_LX_HTTP.format(status=status), False
-    if not isinstance(payload, (dict, list)):
-        return None, REASON_BAD_JSON, False
-
-    # 洛雪自己的协议里没有 code 强制字段；有的话仍按 200 校验
-    code = payload.get("code") if isinstance(payload, dict) else None
-    if code is not None:
-        try:
-            code_ok = int(str(code)) == 200
-        except (TypeError, ValueError):
-            code_ok = False
-        if not code_ok:
-            return None, REASON_LX_CODE.format(code=code), False
-
-    link, reason, is_trial = judge_result(
-        payload,
-        status,
-        require_code=False,
-        require_time=False,
-    )
-    if is_trial:
-        return None, reason or REASON_TRIAL, True
-    if not link:
-        return None, reason or REASON_LX_NO_URL, False
-
-    path, download_reason = _download_file(
-        link,
-        dest,
-        timeout,
-        prefix=f"lx_{_safe_prefix(source)}_{_safe_prefix(song_id)}",
-    )
-    if not path:
-        return None, download_reason or REASON_DOWNLOAD, False
-
-    # 返回体没有时长时，用文件真实时长兜住"60 秒试听"这一类
-    length = _pick_time_ms(payload)
-    if length is None:
-        length = _probe_duration_ms(path)
-    if length is None:
-        _remove_quietly(path)
-        return None, REASON_LX_NO_TIME, False
-    if length < MIN_FULL_LENGTH_MS:
-        logger.warning("兜底给的还是短片段: id=%s 时长=%sms", song_id, length)
-        _remove_quietly(path)
-        return None, REASON_TRIAL, True
-    return path, "", False

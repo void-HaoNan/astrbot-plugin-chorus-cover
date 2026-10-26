@@ -23,11 +23,6 @@ from astrbot.api import logger
 from functools import partial
 from gradio_client import Client
 
-try:
-    from .api import QQ_MUSIC_AVAILABLE
-except ImportError:
-    QQ_MUSIC_AVAILABLE = False
-
 from . import netease
 from .selection import CoverSelectionUI
 from .outbound import Outbound
@@ -69,7 +64,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱（自维护分支，基于 matsuko_cover 2.13.0，AGPL-3.0）：对话出口统一走模型、失败结果结构化",
-    "0.2.2",
+    "0.3.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -85,19 +80,14 @@ class MusicPlugin(Star):
         
         self.default_api = config.get("default_api", "netease_nodejs")
         self.nodejs_base_url = config.get("nodejs_base_url", "https://163api.qijieya.cn")
-        self.enable_qqmusic = config.get("enable_qqmusic", True)
-        self.qqmusic_retry_on_ratelimit = config.get("qqmusic_retry_on_ratelimit", True)
-        self.qqmusic_retry_max_attempts = config.get("qqmusic_retry_max_attempts", 3)
-        self.disable_netease = config.get("disable_netease", False)
-        # 搜索只用网易云（0.2.1）：QQ 搜索拿回来的是 mid，多半只能取到 60 秒试听
-        self.disable_qqmusic = bool(config.get("disable_qqmusic", False))
-        if self.disable_qqmusic:
-            logger.info("disable_qqmusic 已开启：搜歌阶段只走网易云，不再使用 QQ 音乐搜索")
-        if self.disable_netease and self.disable_qqmusic:
-            logger.warning(
-                "disable_netease 与 disable_qqmusic 同时开启，两个搜索源都被关掉了，"
-                "已统一按网易云搜索处理"
-            )
+        # 0.3.0：QQ 音源下线，搜歌和取歌都只走网易云。下面两个开关只为兼容旧配置
+        # 保留读取，无论配置怎么写都不会再调 QQ；disable_qqmusic 固定为 True。
+        self.enable_qqmusic = bool(config.get("enable_qqmusic", False))
+        self.disable_netease = bool(config.get("disable_netease", False))
+        self.disable_qqmusic = True
+        logger.info("QQ 音源已下线：搜歌与取歌只走网易云官方接口")
+        if self.disable_netease:
+            logger.warning("disable_netease 已开启，但 0.3.0 只有网易云这一条路，按网易云继续")
         self.timeout = config.get("timeout", 60)
         self.selection_ui = CoverSelectionUI(
             buttons=bool(config.get("qq_official_buttons", True)),
@@ -117,7 +107,7 @@ class MusicPlugin(Star):
         self.llm_tool_timeout = config.get("llm_tool_timeout", 10)
         self.music_api_timeout = max(5, int(config.get("music_api_timeout", 20)))
 
-        # === 网易云官方接口取整首 + 洛雪兜底（0.2.0）===
+        # === 网易云官方接口取整首（0.3.0 起只有这一条路）===
         self.netease_cookie = str(config.get("netease_cookie", "") or "").strip()
         try:
             quality = int(str(config.get("netease_quality", 320) or 320).strip() or 320)
@@ -128,13 +118,6 @@ class MusicPlugin(Star):
             logger.warning(f"netease_quality={quality} 不在 128/192/320 之内，已按 320 处理")
             quality = 320
         self.netease_quality = quality
-        self.lx_source_base = str(
-            config.get("lx_source_base", "http://127.0.0.1:1011") or ""
-        ).strip()
-        self.lx_source_key = str(
-            config.get("lx_source_key", "U4sEbWlFA+3zgEiG8/MItw==") or ""
-        ).strip()
-        self.enable_lx_fallback = bool(config.get("enable_lx_fallback", True))
         self.alert_admin_on_cookie_expired = bool(
             config.get("alert_admin_on_cookie_expired", True)
         )
@@ -152,18 +135,11 @@ class MusicPlugin(Star):
         if self.default_api == "netease":
             from .api import NetEaseMusicAPI
             self.api = NetEaseMusicAPI()
-        elif self.default_api == "netease_nodejs":
-            from .api import NetEaseMusicAPINodeJs
-            self.api = NetEaseMusicAPINodeJs(base_url=self.nodejs_base_url)
-        elif self.default_api == "qqmusic":
-            if not self.enable_qqmusic:
-                logger.warning("QQ音乐功能未启用，但default_api设置为qqmusic，已自动启用")
-                self.enable_qqmusic = True
-            from .api import QQMusicAPI
-            api_key = config.get("third_party_api_key", "")
-            self.api = QQMusicAPI(api_key=api_key)
         else:
-            logger.warning(f"未知的音乐API类型: {self.default_api}，使用默认的 netease_nodejs")
+            if self.default_api != "netease_nodejs":
+                logger.warning(
+                    f"default_api={self.default_api} 已不支持（QQ 音源下线），改用网易云"
+                )
             from .api import NetEaseMusicAPINodeJs
             self.api = NetEaseMusicAPINodeJs(base_url=self.nodejs_base_url)
 
@@ -833,7 +809,7 @@ class MusicPlugin(Star):
             logger.error(f"下载音频异常: {e}")
         return None
 
-    # ==================== 网易云官方接口 + 洛雪兜底 ====================
+    # ==================== 网易云官方接口（0.3.0 唯一取歌方式） ====================
 
     def _netease_temp_dir(self) -> str:
         """插件自己的临时音频目录（与本地音频下载共用，退出时会清理）。"""
@@ -845,35 +821,16 @@ class MusicPlugin(Star):
         """配置里的音质（128/192/320）换算成接口要的码率。"""
         return int(self.netease_quality) * 1000
 
-    def _lx_quality(self) -> str:
-        """洛雪接口要的是 ``320k`` 这种写法。"""
-        return f"{int(self.netease_quality)}k"
-
     def _resolve_music_source(self, requested: Optional[str] = None) -> str:
-        """把"用户/LLM 想要的音乐源"收敛成实际可用的搜索源。
+        """实际使用的搜索源：0.3.0 起锁死网易云。
 
-        - 认 ``qqmusic`` / ``qq`` 和 ``netease`` / ``netease_nodejs``，其它值按网易云；
-        - ``disable_netease=true`` → 强制 QQ；
-        - ``disable_qqmusic=true`` → 强制网易云（避免搜出 mid，再掉进 60 秒试听）；
-        - 两个都关时按网易云兜住并记 warning，不让流程直接死掉。
+        不管调用方（命令 / LLM 工具 / 卡片）传什么、配置里 default_api 写成什么，
+        最终都返回 ``netease``；传了 QQ 之类的值只记一条 debug，不改变结果。
         """
-        source = str(requested or self.default_api or "netease_nodejs").strip().lower()
-        if source in ("qq", "qqmusic"):
-            source = "qqmusic"
-        elif source not in ("netease", "netease_nodejs"):
-            source = "netease_nodejs"
-
-        if self.disable_netease and source in ("netease", "netease_nodejs"):
-            if self.disable_qqmusic:
-                logger.warning(
-                    "disable_netease 与 disable_qqmusic 同时开启，搜索源按网易云处理"
-                )
-            else:
-                source = "qqmusic"
-        if self.disable_qqmusic and source == "qqmusic":
-            logger.info("disable_qqmusic 已开启，搜索源从 QQ 音乐改为网易云")
-            source = "netease_nodejs"
-        return source
+        source = str(requested or "").strip()
+        if source and source.lower() not in ("netease", "netease_nodejs", "网易云"):
+            logger.debug(f"音乐源 {source} 已下线（QQ 音源下线），按网易云处理")
+        return "netease"
 
     def _short_failure_reason(self, detail: str) -> str:
         """把技术性失败详情压成一句人话（批量报告用，细节只进日志）。"""
@@ -993,7 +950,7 @@ class MusicPlugin(Star):
     async def _fetch_netease_audio(
         self, event: AstrMessageEvent, song_id: str, song_name: str = ""
     ) -> tuple[Optional[str], str, bool]:
-        """取网易云整首歌：官方接口优先，失败走洛雪兜底。
+        """取网易云整首歌：官方接口 + MUSIC_U cookie，取不到整首就失败。
 
         Returns:
             ``(本地文件路径 或 None, 失败原因, 是否试听)``。成功时失败原因为空串。
@@ -1023,21 +980,10 @@ class MusicPlugin(Star):
                 return path, "", False
             logger.warning(f"网易云官方接口没拿到整首: id={song_id} reason={reason}")
         else:
-            logger.warning("没有配置 netease_cookie，跳过官方接口，直接试洛雪兜底")
+            logger.warning("没有配置 netease_cookie，取不到整首（0.3.0 起没有备用音源）")
 
         await self._record_netease_cookie_failure(event, reason, is_trial)
-
-        if not (self.enable_lx_fallback and self.lx_source_base):
-            return None, reason, is_trial
-
-        logger.info(f"网易云走洛雪兜底: id={song_id} base={self.lx_source_base}")
-        lx_path, lx_reason, lx_trial = await self._fetch_lx_audio(
-            song_id, "wy", self._lx_quality(), song_name
-        )
-        if lx_path:
-            return lx_path, "", False
-        logger.warning(f"洛雪兜底也没成: id={song_id} reason={lx_reason} trial={lx_trial}")
-        return None, f"官方接口: {reason}；洛雪兜底: {lx_reason}", is_trial or lx_trial
+        return None, reason, is_trial
 
     # ==================== 统一取歌入口（0.2.1） ====================
 
@@ -1073,9 +1019,8 @@ class MusicPlugin(Star):
     def _netease_search_api(self):
         """拿一个"确定是网易云"的搜索器，返回 ``(api, 是否需要我自己关闭)``。
 
-        配置的 ``default_api`` 可能是 ``qqmusic``，这时 ``self.api`` 其实是 QQ
-        搜索器，返回的 id 是 mid——直接拿去走网易云那条路就会被当成"搜不到"。
-        所以这里只在 ``self.api`` 确实是网易云实现时复用它，否则临时建一个。
+        0.3.0 起 ``self.api`` 一定是网易云实现，正常情况直接复用；万一被外部
+        换成别的搜索器，就临时建一个网易云搜索器，避免把非网易云 id 当歌曲 id。
         """
         api = getattr(self, "api", None)
         if type(api).__name__ in ("NetEaseMusicAPI", "NetEaseMusicAPINodeJs"):
@@ -1124,76 +1069,6 @@ class MusicPlugin(Star):
         )
         return song_id, ""
 
-    async def _fetch_lx_audio(
-        self, song_key: str, source: str, quality: str, label: str = ""
-    ) -> tuple[Optional[str], str, bool]:
-        """洛雪源取一次（下完自动用 ffprobe 卡 80 秒，60 秒试听过不去）。"""
-        if not (self.enable_lx_fallback and self.lx_source_base):
-            return None, "洛雪没启用", False
-        logger.info(
-            f"[取歌] {label or song_key} 走洛雪 source={source} quality={quality}"
-        )
-        path, reason, is_trial = await asyncio.to_thread(
-            netease.download_via_lx,
-            song_key,
-            self.lx_source_base,
-            self.lx_source_key,
-            quality,
-            self._netease_temp_dir(),
-            120,
-            source,
-        )
-        if path:
-            logger.info(f"[取歌] 洛雪成功: source={source} key={song_key} file={path}")
-        else:
-            logger.info(
-                f"[取歌] 洛雪失败: source={source} key={song_key} "
-                f"reason={reason} trial={is_trial}"
-            )
-        return path, reason, is_trial
-
-    async def _fetch_qq_audio(
-        self, songmid: str, song_name: str = ""
-    ) -> tuple[Optional[str], str, bool]:
-        """用 QQ 音乐官方库取一次音源；下完同样按 80 秒闸门过滤试听。
-
-        这是 QQ mid 降级链里的一步：洛雪 ``tx`` 实测永远只给 60 秒，过不了闸门；
-        QQ 官方库对非 VIP 歌曲能给出整首链接，但也会给试听，所以必须量时长。
-        """
-        if not (QQ_MUSIC_AVAILABLE and self.enable_qqmusic):
-            return None, "QQ音乐不可用", False
-        from .api import QQMusicAPI
-
-        qq_api = QQMusicAPI(api_key=self.config.get("third_party_api_key", ""))
-        try:
-            audio_url = await asyncio.wait_for(
-                qq_api.fetch_song_url(songmid, song_name=song_name or songmid),
-                timeout=self.music_api_timeout,
-            )
-            if not audio_url:
-                return None, "QQ音乐没给链接", False
-            path = await self._download_audio(audio_url, ".mp3")
-            if not path:
-                return None, "QQ音乐下载失败", False
-            duration = await asyncio.to_thread(netease.probe_duration_ms, path)
-            if duration is None:
-                self._drop_file(path)
-                return None, "量不到时长", False
-            if duration < netease.MIN_FULL_LENGTH_MS:
-                logger.info(f"[取歌] QQ音乐给的是片段（{duration}ms），按试听失败")
-                self._drop_file(path)
-                return None, "只给了试听", True
-            logger.info(f"[取歌] QQ音乐取到整首: mid={songmid} 时长={duration}ms")
-            return path, "", False
-        except Exception as exc:
-            logger.warning(f"QQ音乐取歌失败（mid={songmid}）: {exc}")
-            return None, "QQ音乐取歌失败", False
-        finally:
-            try:
-                await qq_api.close()
-            except Exception as exc:
-                logger.debug(f"关闭临时 QQ 音乐客户端失败: {exc}")
-
     @staticmethod
     def _drop_file(path: str) -> None:
         """删掉一个临时文件；删不掉只记日志，不影响主流程。"""
@@ -1214,16 +1089,15 @@ class MusicPlugin(Star):
     async def _prepare_song_audio(
         self, event: AstrMessageEvent, song: Any
     ) -> tuple[Optional[str], str, bool]:
-        """统一取歌入口：把"歌曲对象 / 歌名 / 网易云 id / QQ mid"变成本地音频文件。
+        """统一取歌入口：把"歌曲对象 / 歌名 / 网易云 id / 旧的 QQ mid"变成本地音频文件。
 
-        判定顺序（0.2.1，所有取歌路径都只从这里出去）：
+        判定顺序（0.3.0，所有取歌路径都只从这里出去）：
 
         1. 已经是存在的本地文件 → 直接返回；
-        2. 纯数字 → 当网易云 id（官方接口优先，失败再洛雪 ``/link/wy``，都过 80 秒闸门）；
-        3. ``^[0-9A-Za-z]{11,14}$`` 且含字母 → 当 QQ mid：洛雪 ``/link/tx`` →
-           QQ 官方库 → 按歌名回网易云搜索，每一步都过 80 秒闸门；
-        4. 其它 → 当歌名：网易云搜索第一条的 id → 回到第 2 条；搜不到再洛雪
-           ``/link/wy/<歌名>`` 试一次。
+        2. 纯数字 → 当网易云 id，走官方接口 + cookie，过 80 秒闸门；
+        3. ``^[0-9A-Za-z]{11,14}$`` 且含字母 → 只剩 QQ mid 的旧数据：不再碰任何
+           QQ 音源，直接按歌名去网易云搜，搜不到就失败；
+        4. 其它 → 当歌名：网易云搜索第一条的 id → 回到第 2 条，搜不到就失败。
 
         Returns:
             ``(本地文件路径 或 None, 失败原因, 是否试听)``。失败原因是简短中文，
@@ -1253,38 +1127,23 @@ class MusicPlugin(Star):
             logger.info(f"[取歌] 网易云 id {raw_id} 没拿到: {reason}")
             return None, f"网易云: {reason}", is_trial
 
-        # 3) QQ 音乐 mid（11~14 位字母数字，纯数字已在上面拦掉）
+        # 3) 旧的 QQ mid（11~14 位字母数字，纯数字已在上面拦掉）：QQ 音源已下线，
+        #    不再去任何 QQ 接口，只按歌名去网易云搜，搜不到就失败。
         if self._looks_like_qq_mid(raw_id):
-            logger.info(f"[取歌] {label} 按 QQ mid 取: {raw_id}")
-            path, reason, is_trial = await self._fetch_lx_audio(raw_id, "tx", "128k", label)
-            if path:
-                return path, "", False
-            reasons.append(f"洛雪QQ: {reason}")
-
-            path, reason, qq_trial = await self._fetch_qq_audio(raw_id, name)
-            if path:
-                return path, "", False
-            reasons.append(f"QQ官方库: {reason}")
-            is_trial = is_trial or qq_trial
-
             keyword = f"{name} {artists}".strip()
-            # 只有 mid、没有单独歌名时（name 就是 mid 本身），拿 mid 去搜歌名毫无意义
-            if keyword and keyword != raw_id:
-                song_id, search_reason = await self._search_netease_id(keyword)
-                if song_id:
-                    path, reason, netease_trial = await self._fetch_netease_audio(
-                        event, song_id, label
-                    )
-                    if path:
-                        return path, "", False
-                    reasons.append(f"按名回网易云: {reason}")
-                    is_trial = is_trial or netease_trial
-                else:
-                    reasons.append(f"按名搜索: {search_reason}")
-            else:
-                reasons.append("没有歌名可回落")
-            logger.info(f"[取歌] QQ mid {raw_id} 全链失败: {'；'.join(reasons)}")
-            return None, "；".join(reasons), is_trial
+            logger.info(f"[取歌] {label} 是旧的 QQ mid，改按歌名去网易云搜: {keyword}")
+            if not keyword or keyword == raw_id:
+                logger.info(f"[取歌] QQ mid {raw_id} 没有歌名可搜，放弃")
+                return None, "这条是 QQ mid，但拿不到歌名，网易云搜不了", False
+            song_id, search_reason = await self._search_netease_id(keyword)
+            if not song_id:
+                logger.info(f"[取歌] QQ mid {raw_id} 按名搜网易云失败: {search_reason}")
+                return None, f"按歌名搜网易云: {search_reason}", False
+            path, reason, is_trial = await self._fetch_netease_audio(event, song_id, label)
+            if path:
+                return path, "", False
+            logger.info(f"[取歌] QQ mid {raw_id} 搜到 id {song_id} 但没取到: {reason}")
+            return None, f"按歌名搜网易云: {reason}", is_trial
 
         # 4) 其它字符串 → 当歌名，先搜网易云拿数字 id
         keyword = name or raw_id
@@ -1297,14 +1156,6 @@ class MusicPlugin(Star):
             reasons.append(f"网易云 id {song_id}: {reason}")
         else:
             reasons.append(f"网易云搜索: {search_reason}")
-            # 搜不到才再用歌名去洛雪试一次（洛雪会自己搜）
-            path, reason, lx_trial = await self._fetch_lx_audio(
-                keyword, "wy", self._lx_quality(), label
-            )
-            if path:
-                return path, "", False
-            reasons.append(f"洛雪按名: {reason}")
-            is_trial = is_trial or lx_trial
 
         logger.info(f"[取歌] 歌名 {keyword} 全链失败: {'；'.join(reasons)}")
         return None, "；".join(reasons), is_trial
@@ -2523,7 +2374,7 @@ class MusicPlugin(Star):
             event,
             "🎵 松子翻唱",
             "网易云音乐：/rvc、/svc、/svcvc <歌名> [升降调]\n"
-            "QQ 音乐：/qqrvc、/qqsvc、/qqsvcvc <歌名> [升降调]\n"
+            "QQ 音乐已下线，只会用网易云取歌\n"
             "本地音频：发送音频后使用 /本地翻唱\n\n"
             "点歌后依次选择歌曲和音色，翻唱完成后发送音频。\n"
             "选择菜单支持按钮、序号、翻页和取消。\n"
@@ -2820,9 +2671,6 @@ class MusicPlugin(Star):
         if self.llm_force_mode:
             yield event.plain_result("当前已开启 LLM 强制模式，/rvc 命令已被禁用。\n请直接对我说'翻唱《歌名》'，我会自动帮您处理！")
             return
-        if self.disable_netease:
-            yield event.plain_result("网易云音乐点歌功能已被禁用。\n请使用 /qqrvc <歌名> 使用QQ音乐点歌翻唱！")
-            return
         async for result in self._handle_cover(event, api_type="rvc"):
             yield result
 
@@ -2860,9 +2708,6 @@ class MusicPlugin(Star):
             return
         if self.llm_force_mode:
             yield event.plain_result("当前已开启 LLM 强制模式，/svc 命令已被禁用。\n请直接对我说'翻唱《歌名》'，我会自动帮您处理！")
-            return
-        if self.disable_netease:
-            yield event.plain_result("网易云音乐点歌功能已被禁用。\n请使用 /qqrvc <歌名> 或 /qqsvc <歌名> 使用QQ音乐点歌翻唱！")
             return
         async for result in self._handle_cover(event, api_type="svc"):
             yield result
@@ -2917,101 +2762,6 @@ class MusicPlugin(Star):
             return
         async for result in self._handle_cover(event, api_type="svcvc"):
             yield result
-
-    @filter.command("qqrvc")
-    async def qqrvc(self, event: AstrMessageEvent):
-        if self.llm_force_mode:
-            yield event.plain_result("当前已开启 LLM 强制模式，/qqrvc 命令已被禁用。\n请直接对我说'用QQ音乐翻唱《歌名》'，我会自动帮您处理！")
-            return
-        if not self.enable_rvc:
-            yield event.plain_result("❌ RVC 功能已在配置中禁用。如需使用请在插件配置中设置 enable_rvc 为 true。")
-            return
-        if not self.enable_qqmusic:
-            yield event.plain_result("❌ QQ音乐功能未启用！请在插件配置中开启 'enable_qqmusic' 开关。")
-            return
-        if not QQ_MUSIC_AVAILABLE:
-            yield event.plain_result("❌ qqmusic-api-python 库未安装！请运行: pip install qqmusic-api-python")
-            return
-        async for result in self._handle_qq_cover(event, api_type="rvc"):
-            yield result
-
-    @filter.command("qqsvc")
-    async def qqsvc(self, event: AstrMessageEvent):
-        if self.llm_force_mode:
-            yield event.plain_result("当前已开启 LLM 强制模式，/qqsvc 命令已被禁用。\n请直接对我说'用QQ音乐和SVC翻唱《歌名》'，我会自动帮您处理！")
-            return
-        if not self.enable_svc:
-            yield event.plain_result("❌ SVC 功能已在配置中禁用。如需使用请在插件配置中设置 enable_svc 为 true。")
-            return
-        if not self.enable_qqmusic:
-            yield event.plain_result("❌ QQ音乐功能未启用！请在插件配置中开启 'enable_qqmusic' 开关。")
-            return
-        if not QQ_MUSIC_AVAILABLE:
-            yield event.plain_result("❌ qqmusic-api-python 库未安装！请运行: pip install qqmusic-api-python")
-            return
-        async for result in self._handle_qq_cover(event, api_type="svc"):
-            yield result
-
-    @filter.command("qqsvcvc")
-    async def qqsvcvc(self, event: AstrMessageEvent):
-        if self.llm_force_mode:
-            yield event.plain_result(
-                "当前已开启 LLM 强制模式，/qqsvcvc 命令已禁用。"
-                "请直接对松子说“用 QQ 音乐和 SoulX 参考音色翻唱《歌名》”。"
-            )
-            return
-        if not self.enable_svcvc:
-            yield event.plain_result(
-                "❌ SoulX-SVCVC 已在配置中禁用，请开启 enable_svcvc。"
-            )
-            return
-        if not self.enable_qqmusic:
-            yield event.plain_result("❌ QQ 音乐功能未启用，请开启 enable_qqmusic。")
-            return
-        if not QQ_MUSIC_AVAILABLE:
-            yield event.plain_result(
-                "❌ qqmusic-api-python 未安装，请先安装该依赖。"
-            )
-            return
-        async for result in self._handle_qq_cover(event, api_type="svcvc"):
-            yield result
-
-    @filter.command("qq点歌")
-    async def qq_search(self, event: AstrMessageEvent):
-        if self.llm_force_mode:
-            yield event.plain_result("当前已开启 LLM 强制模式，/qq点歌 命令已被禁用。\n请直接对我说'搜索QQ音乐《歌名》'，我会自动帮您处理！")
-            return
-        if not self.enable_qqmusic:
-            yield event.plain_result("❌ QQ音乐功能未启用！请在插件配置中开启 'enable_qqmusic' 开关。")
-            return
-        if not QQ_MUSIC_AVAILABLE:
-            yield event.plain_result("❌ qqmusic-api-python 库未安装！请运行: pip install qqmusic-api-python")
-            return
-        keyword = event.message_str.replace("qq点歌", "").strip()
-        if not keyword:
-            yield event.plain_result("用法: /qq点歌 <关键词>")
-            return
-        from .api import QQMusicAPI
-        api_key = self.config.get("third_party_api_key", "")
-        api = QQMusicAPI(api_key=api_key)
-        try:
-            songs = await api.fetch_data(keyword=keyword, limit=5)
-            if not songs:
-                yield event.plain_result(f"在QQ音乐未找到与 '{keyword}' 相关的歌曲。")
-                return
-            lines = [f"🎵 在QQ音乐找到 {len(songs)} 首相关歌曲：", ""]
-            for i, song in enumerate(songs, 1):
-                duration_sec = song.get("duration", 0) // 1000
-                minutes, seconds = divmod(duration_sec, 60)
-                lines.append(f"{i}. {song['name']} - {song['artists']} ({minutes}:{seconds:02d})")
-            lines.append("")
-            lines.append("💡 使用 /qqrvc、/qqsvc 或 /qqsvcvc <歌名> 进行翻唱")
-            await self.selection_ui.send_card(event, "🎵 QQ 音乐搜索", "\n".join(lines))
-        except Exception as e:
-            logger.error(f"QQ音乐搜索失败: {e}")
-            yield event.plain_result(f"搜索失败: {e}")
-        finally:
-            await api.close()
 
     @filter.command("本地翻唱")
     async def local_audio_cover_cmd(self, event: AstrMessageEvent):
@@ -3088,8 +2838,7 @@ class MusicPlugin(Star):
             yield event.plain_result("请输入歌名！")
             return
 
-        # 这里明确标着"来源：网易云音乐"，就必须用网易云搜索器：
-        # default_api=qqmusic 时 self.api 是 QQ，搜出来的是 mid，后面选歌再翻唱会踩坑。
+        # 这里明确标着"来源：网易云音乐"，固定用网易云搜索器（0.3.0 起只有这一个源）。
         songs, search_reason = await self._search_netease_songs(song_name, limit=10)
         if not songs:
             logger.info(f"网易云搜歌没结果: {song_name}（{search_reason}）")
@@ -3150,118 +2899,6 @@ class MusicPlugin(Star):
             key_shift=key_shift,
             api_type=api_type,
         )
-
-    async def _handle_qq_cover(self, event: AstrMessageEvent, api_type="rvc"):
-        cmd = {"rvc": "qqrvc", "svc": "qqsvc", "svcvc": "qqsvcvc"}.get(
-            api_type, f"qq{api_type}"
-        )
-        args = event.message_str.replace(cmd, "").strip().split()
-
-        if self.disable_qqmusic:
-            # 搜索只用网易云的开关打开后，QQ 点歌入口不再可用，提示改走网易云命令
-            yield event.plain_result(
-                "现在搜索只走网易云，QQ 音乐点歌入口已经关掉了。\n"
-                "用 /rvc、/svc 或 /svcvc 点歌就行。"
-            )
-            return
-
-        if not args:
-            await self.selection_ui.send_card(
-                event,
-                f"🎵 {self._engine_display_name(api_type)} 翻唱",
-                f"用法：/{cmd} <歌名> [升降调]\n"
-                f"示例：/{cmd} 优しい詩。\n\n"
-                "输入歌名后，按卡片选择歌曲，再选择模型或参考音色。\n"
-                "发送 /翻唱帮助 查看所有入口。",
-            )
-            return
-
-        key_shift, song_name = (None if api_type == "svcvc" else 0), " ".join(args)
-        if args and args[-1].lstrip("-").isdigit():
-            try:
-                val = int(args[-1])
-                min_shift, max_shift = self._key_shift_range(api_type)
-                if min_shift <= val <= max_shift:
-                    key_shift = val
-                    song_name = " ".join(args[:-1]) if len(args) > 1 else ""
-            except ValueError:
-                pass
-
-        if not song_name:
-            yield event.plain_result("请输入歌名！")
-            return
-
-        from .api import QQMusicAPI
-
-        api_key = self.config.get("third_party_api_key", "")
-        qq_api = QQMusicAPI(api_key=api_key)
-        try:
-            songs = await asyncio.wait_for(
-                qq_api.fetch_data(keyword=song_name, limit=10),
-                timeout=self.music_api_timeout,
-            )
-            if not songs:
-                yield event.plain_result("在QQ音乐没能找到这首歌~")
-                return
-
-            try:
-                selected_song_index, event = await self.selection_ui.choose(
-                    event,
-                    f"🎵 {self._engine_display_name(api_type)} · 选择歌曲\n来源：QQ 音乐",
-                    [f"{song['name']} - {song['artists']}" for song in songs],
-                    self.timeout,
-                )
-                if selected_song_index is None:
-                    await event.send(event.plain_result("已取消选歌。"))
-                    return
-                selected_song = songs[selected_song_index]
-                display_str, keys = self.get_models_display_list(api_type=api_type)
-                if not keys:
-                    refresh_cmd = (
-                        "/刷新svcvc音色"
-                        if api_type == "svcvc"
-                        else f"/刷新{api_type}模型"
-                    )
-                    yield event.plain_result(
-                        f"当前没有可用的 {self._engine_display_name(api_type)} 模型/音色，"
-                        f"请先使用 {refresh_cmd}。"
-                    )
-                    return
-                selected_model_index, event = await self.selection_ui.choose(
-                    event,
-                    f"🎙️ {self._engine_display_name(api_type)} · 选择音色\n已选歌曲：{selected_song['name']}\n歌手：{selected_song['artists']}",
-                    [line.split(". ", 1)[1] for line in display_str.splitlines()],
-                    self.timeout,
-                )
-            except TimeoutError:
-                yield event.plain_result("选择超时，操作已取消。")
-                return
-            except ValueError as exc:
-                yield event.plain_result(str(exc))
-                return
-            if selected_model_index is None:
-                await event.send(event.plain_result("已取消音色选择。"))
-                return
-
-            selected_model = keys[selected_model_index]
-
-            await self.selection_ui.send_card(
-                event,
-                "🎙️ 开始翻唱",
-                f"歌曲：{selected_song['name']}\n歌手：{selected_song['artists']}\n"
-                f"引擎：{self._engine_display_name(api_type)}\n音色：{selected_model}\n"
-                f"来源：QQ 音乐\n升降调：{key_shift if key_shift is not None else '自动'}\n\n"
-                "已开始生成，完成后会发送音频。",
-            )
-            await self._send_song(
-                event=event,
-                song=selected_song,
-                model_name=selected_model,
-                key_shift=key_shift,
-                api_type=api_type,
-            )
-        finally:
-            await qq_api.close()
 
     async def initialize(self):
         """Bind QQ callback handlers to platform clients already loaded."""
@@ -3493,51 +3130,26 @@ class MusicPlugin(Star):
     
     @filter.llm_tool(name="search_music")
     async def search_music(self, event: AstrMessageEvent, keyword: str, limit: int = 5, platform: str = "default") -> str:
-        '''搜索音乐平台的歌曲。
+        '''搜索网易云音乐的歌曲。
 
         Args:
             keyword(string): 搜索关键词，可以是歌曲名、歌手名等
             limit(number): 返回结果数量上限，默认为5，最大为10
-            platform(string, optional): 音乐平台选择，可选值：
-                - 'default': 使用配置中设置的平台（默认）
-                - 'netease' 或 '网易云': 网易云音乐
-                - 'qq' 或 'qqmusic' 或 'QQ音乐': QQ音乐（需要启用QQ音乐功能）
+            platform(string, optional): 0.3.0 起只支持网易云，传其它值一律按网易云处理
         
         Returns:
             返回搜索到的歌曲列表，包含序号、歌名、歌手和歌曲ID
         '''
-        api_to_use = self.api
         platform_name = "网易云音乐"
-        _qq_api_inst = None
         _netease_api_inst = None
         
         try:
             limit = min(max(limit, 1), 10)
-
-            wants_qq = platform.lower() in ['qq', 'qqmusic', 'qq音乐']
-            if wants_qq and self.disable_qqmusic:
-                # 搜索只用网易云的开关：QQ 请求直接降级，别拿回一堆 mid
-                logger.info("disable_qqmusic 已开启：QQ 音乐搜索请求改走网易云")
-                wants_qq = False
-
-            if wants_qq:
-                if not self.enable_qqmusic:
-                    return "❌ QQ音乐功能未启用！请在插件配置中开启 'enable_qqmusic' 开关。"
-                if not QQ_MUSIC_AVAILABLE:
-                    return "❌ qqmusic-api-python 库未安装！请联系管理员安装。"
-                
-                from .api import QQMusicAPI
-                api_key = self.config.get("third_party_api_key", "")
-                _qq_api_inst = QQMusicAPI(api_key=api_key)
-                api_to_use = _qq_api_inst
-                platform_name = "QQ音乐"
-            else:
-                if self.disable_netease:
-                    return "❌ 网易云音乐功能已被禁用！请使用 platform='qq' 或 platform='qqmusic' 搜索QQ音乐。"
-                api_to_use, _search_api_temporary = self._netease_search_api()
-                if _search_api_temporary:
-                    _netease_api_inst = api_to_use
-                platform_name = "网易云音乐"
+            if platform and platform.lower() not in ('default', 'netease', 'netease_nodejs', '网易云'):
+                logger.info(f"音乐源 {platform} 已下线（QQ 音源下线），按网易云搜索")
+            api_to_use, _search_api_temporary = self._netease_search_api()
+            if _search_api_temporary:
+                _netease_api_inst = api_to_use
 
             songs = await asyncio.wait_for(
                 api_to_use.fetch_data(keyword=keyword, limit=limit),
@@ -3545,8 +3157,6 @@ class MusicPlugin(Star):
             )
             
             if not songs:
-                if platform_name == "QQ音乐":
-                    return f"❌ 在QQ音乐未找到与 '{keyword}' 相关的歌曲。可能原因：1) QQ音乐API连接失败 2) 该歌曲不存在于QQ音乐 3) 网络问题。建议尝试用网易云音乐搜索（platform='netease'）或换一首歌名。"
                 return f"在{platform_name}未找到与 '{keyword}' 相关的歌曲。"
             
             if self.enable_enhanced_context:
@@ -3582,8 +3192,6 @@ class MusicPlugin(Star):
             logger.error(traceback.format_exc())
             return f"搜索歌曲时出错: {e}"
         finally:
-            if _qq_api_inst is not None:
-                await _qq_api_inst.close()
             if _netease_api_inst is not None:
                 try:
                     await _netease_api_inst.close()
@@ -3601,8 +3209,7 @@ class MusicPlugin(Star):
             model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
                 例如：'塔菲'会自动匹配到tafeim.pth
             key_shift(number): 音调调整，范围为-12到12，默认为0
-            music_source(string, optional): 音乐源选择，'netease'(网易云) 或 'qqmusic'(QQ音乐)
-                不指定则使用默认音乐源。推荐QQ音乐！
+            music_source(string, optional): 已忽略；0.3.0 起只用网易云官方接口取歌
         
         Returns:
             翻唱结果的描述信息（异步模式会立即返回"正在处理"）
@@ -3627,7 +3234,7 @@ class MusicPlugin(Star):
                 break
         
         actual_music_source = self._resolve_music_source(music_source)
-        source_display = "QQ音乐" if actual_music_source == "qqmusic" else "网易云"
+        source_display = "网易云"
         
         search_query = f"{song_name} {artist_name}" if artist_name else song_name
 
@@ -3655,8 +3262,7 @@ class MusicPlugin(Star):
             model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
                 例如：'塔菲'会自动匹配到tafeim.pth
             key_shift(number): 音调调整，范围为-12到12，默认为0
-            music_source(string, optional): 音乐源选择，'netease'(网易云) 或 'qqmusic'(QQ音乐)
-                不指定则使用默认音乐源。推荐QQ音乐！
+            music_source(string, optional): 已忽略；0.3.0 起只用网易云官方接口取歌
         
         Returns:
             翻唱结果的描述信息（异步模式会立即返回"正在处理"）
@@ -3681,7 +3287,7 @@ class MusicPlugin(Star):
                 break
         
         actual_music_source = self._resolve_music_source(music_source)
-        source_display = "QQ音乐" if actual_music_source == "qqmusic" else "网易云"
+        source_display = "网易云"
         
         search_query = f"{song_name} {artist_name}" if artist_name else song_name
 
@@ -3717,7 +3323,7 @@ class MusicPlugin(Star):
             model_index(number): 参考音色序号，从1开始
             model_name(string, optional): 参考音色名称或别名，优先于序号
             key_shift(number, optional): 手动变调，范围-36到36；不传时使用插件配置，显式传0会覆盖配置并交给SoulX自动匹配音域
-            music_source(string, optional): 'netease' 或 'qqmusic'
+            music_source(string, optional): 已忽略；0.3.0 起只用网易云
 
         Returns:
             后台任务启动结果；完成后会自动发送音频和实际种子
@@ -3743,7 +3349,7 @@ class MusicPlugin(Star):
             return "❌ 参考音色序号无效，请先读取 SoulX-SVCVC 音色列表。"
 
         actual_music_source = self._resolve_music_source(music_source)
-        source_display = "QQ音乐" if actual_music_source == "qqmusic" else "网易云"
+        source_display = "网易云"
         search_query = f"{song_name} {artist_name}" if artist_name else song_name
 
         if not self._register_active_task(event, song_name, "svcvc", model_display):
@@ -3803,87 +3409,26 @@ class MusicPlugin(Star):
             if key_shift is not None and not (min_shift <= key_shift <= max_shift):
                 return f"❌ 音调调整值无效，请在 {min_shift} 到 {max_shift} 之间选择。"
             
-            # === 根据音乐源选择 API ===
+            # === 搜歌：0.3.0 起只用网易云（QQ 音源已下线，不再读音乐源配置）===
             actual_music_source = self._resolve_music_source(music_source)
-            if actual_music_source == "qqmusic":
-                if not self.enable_qqmusic:
-                    return "❌ QQ音乐功能未启用"
-                from .api import QQMusicAPI
-                api_key = self.config.get("third_party_api_key", "")
-                search_api = QQMusicAPI(api_key=api_key)
+            search_api, search_api_temporary = self._netease_search_api()
+            if search_api_temporary:
                 temporary_search_api = search_api
-            else:
-                if self.disable_netease:
-                    return "❌ 网易云音乐功能已禁用"
-                # 网易云这条路必须用"确定是网易云"的搜索器：default_api=qqmusic 时
-                # self.api 是 QQ 搜索器，拿回来的 id 是 mid，交给网易云那条路只会
-                # 得到"网易云搜不到这首歌：<mid>"（0.2.1 修的就是这个）。
-                search_api, search_api_temporary = self._netease_search_api()
-                if search_api_temporary:
-                    temporary_search_api = search_api
 
-            # === QQ音乐风控重试机制 ===
-            songs = []
-            if actual_music_source == "qqmusic" and self.qqmusic_retry_on_ratelimit:
-                # 带重试的QQ音乐搜索
-                last_error = None
-                retry_sent = False
-                for attempt in range(1, self.qqmusic_retry_max_attempts + 1):
-                    try:
-                        logger.info(
-                            f"[CoverFlow:{flow_id}] stage=music_search | "
-                            f"source={actual_music_source} | attempt={attempt}"
-                        )
-                        songs = await asyncio.wait_for(
-                            search_api.fetch_data(keyword=song_name, limit=10),
-                            timeout=self.music_api_timeout,
-                        )
-                        if songs:
-                            break  # 搜索成功，跳出重试循环
-                        # 返回空列表，可能是风控或真的没结果
-                        logger.warning(f"QQ音乐搜索返回空列表，尝试 {attempt}/{self.qqmusic_retry_max_attempts}")
-                        if attempt < self.qqmusic_retry_max_attempts:
-                            # 第一次重试时走统一出口（默认静音，由 notify_retry 控制）
-                            if not retry_sent:
-                                await self.outbound.say(event, "retry", song=song_name, reason="音乐搜索失败")
-                                retry_sent = True
-                            await asyncio.sleep(5)  # 等待5秒后重试
-                    except Exception as e:
-                        last_error = str(e)
-                        logger.warning(f"QQ音乐搜索异常: {e}，尝试 {attempt}/{self.qqmusic_retry_max_attempts}")
-                        if attempt < self.qqmusic_retry_max_attempts:
-                            # 第一次重试时走统一出口（默认静音，由 notify_retry 控制）
-                            if not retry_sent:
-                                await self.outbound.say(event, "retry", song=song_name, reason="音乐搜索失败")
-                                retry_sent = True
-                            await asyncio.sleep(5)  # 等待5秒后重试
-                
-                if not songs:
-                    error_detail = f" (最后一次错误: {last_error})" if last_error else ""
-                    return f"❌ QQ音乐搜索失败: 无法找到《{song_name}》。已重试{self.qqmusic_retry_max_attempts}次仍失败。可能原因：1) QQ音乐API触发风控，需进行登录或安全验证 2) 该歌曲不存在于QQ音乐 3) 网络问题。建议尝试用网易云音乐搜索（music_source='netease'）或稍后再试。{error_detail}"
-            else:
-                # 普通搜索（无重试）
-                logger.info(
-                    f"[CoverFlow:{flow_id}] stage=music_search | "
-                    f"source={actual_music_source} | timeout={self.music_api_timeout}s"
-                )
-                songs = await asyncio.wait_for(
-                    search_api.fetch_data(keyword=song_name, limit=10),
-                    timeout=self.music_api_timeout,
-                )
+            logger.info(
+                f"[CoverFlow:{flow_id}] stage=music_search | "
+                f"source={actual_music_source} | timeout={self.music_api_timeout}s"
+            )
+            songs = await asyncio.wait_for(
+                search_api.fetch_data(keyword=song_name, limit=10),
+                timeout=self.music_api_timeout,
+            )
 
             logger.info(
                 f"[CoverFlow:{flow_id}] stage=music_search_done | count={len(songs)}"
             )
-            
-            # 关闭临时创建的 QQMusicAPI 搜索实例
-            if actual_music_source == "qqmusic" and hasattr(search_api, 'close'):
-                await search_api.close()
-                temporary_search_api = None
-            
+
             if not songs:
-                if actual_music_source == "qqmusic":
-                    return f"❌ QQ音乐搜索失败: 无法找到《{song_name}》。可能原因：1) QQ音乐API触发风控，需进行登录或安全验证 2) 该歌曲不存在于QQ音乐 3) 网络问题。建议尝试用网易云音乐搜索（music_source='netease'）或稍后再试。"
                 return f"❌ 未找到歌曲 '{song_name}'。"
             
             # 智能匹配：如果搜索结果有多个，尝试找到和用户搜索词最匹配的一首
@@ -4189,9 +3734,7 @@ class MusicPlugin(Star):
                 例如：'塔菲'会自动匹配到tafeim.pth，'maxmaxpoi'也能匹配
             key_shift(number, optional): 音调调整。RVC/SVC 范围 -12 到 12，SoulX-SVCVC 范围 -36 到 36；不指定则使用默认值或用户偏好。
                 调用此工具前，你应该分析原曲演唱者性别与目标模型音域的匹配关系（如周杰伦男声→塔菲喵女声）。但分析完成后请不要传入 key_shift，插件会根据分析结果自动应用配置中的升降调值（男→女用 male_to_female_shift，女→男用 female_to_male_shift）。只有当用户明确要求特定数值（如"升3调"）时才传入 key_shift。
-            music_source(string, optional): 音乐源选择，'netease'(网易云) 或 'qqmusic'(QQ音乐)。
-                不指定则使用配置的默认音乐源。推荐QQ音乐，版权更全！
-                示例：music_source='qqmusic'
+            music_source(string, optional): 已忽略；0.3.0 起只用网易云官方接口取歌
         
         Returns:
             翻唱结果描述（异步模式会立即返回"正在处理"）
@@ -4200,7 +3743,7 @@ class MusicPlugin(Star):
             - model_name 支持中文别名和文件名，无需记住序号！
             - 如果同时指定 model_index 和 model_name，以 model_name 为准
             - 本工具采用异步执行，会立即返回并后台处理，完成后自动发送音频
-            - 推荐使用 music_source='qqmusic' 获取更多正版音乐
+            - 音乐源固定为网易云（QQ 音源已下线）
             - 如果指定的 api_type 已被禁用，会自动切换到可用的引擎或返回提示
         '''
         if not self.enable_smart_cover:
@@ -4248,8 +3791,6 @@ class MusicPlugin(Star):
             )
             
             actual_music_source = self._resolve_music_source(music_source)
-            if actual_music_source == "qqmusic" and not self.enable_qqmusic:
-                return "❌ QQ音乐功能未启用，请在插件配置中开启 enable_qqmusic"
             
             if self.enable_preference_learning:
                 user_id = self._get_user_id(event)
@@ -4303,7 +3844,7 @@ class MusicPlugin(Star):
                             artist_pref_hint = f"，这次按老习惯挑了翻唱{artist_name}常用的音色"
                             break
             
-            source_display = "QQ音乐" if actual_music_source == "qqmusic" else ("网易云" if actual_music_source in ["netease", "netease_nodejs"] else actual_music_source)
+            source_display = "网易云"
             
             search_query = f"{song_name} {artist_name}" if artist_name else song_name
             
@@ -4533,8 +4074,6 @@ class MusicPlugin(Star):
                 return f"⚠️ {actual_api_type.upper()} 引擎已在配置中禁用。\n当前可用的翻唱引擎: {', '.join(available_engines).upper()}\n请指定可用的引擎，例如 api_type='{available_engines[0]}'"
             
             actual_music_source = self._resolve_music_source(music_source)
-            if actual_music_source == "qqmusic" and not self.enable_qqmusic:
-                return "❌ QQ音乐功能未启用，请在插件配置中开启 enable_qqmusic"
 
             # 注册活跃任务
             batch_song_names = "、".join(songs[:3])

@@ -1,3 +1,2 @@
 gradio_client
 aiohttp
-qqmusic-api-python

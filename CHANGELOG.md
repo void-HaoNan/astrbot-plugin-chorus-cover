@@ -3,6 +3,31 @@
 本文件记录 **astrbot_plugin_chorus_cover**（副歌翻唱 · 自维护分支）的变更。
 上游 `sdfsfsk/matsuko_cover` 的历史日志请见上游仓库，此处只记本分支的差异。
 
+## v0.3.0（2026-10-27）
+
+彻底移除洛雪（LX-Source），音源只剩网易云官方接口 + cookie；QQ 音源下线。
+
+### 移除
+
+- **`netease.py`**：删除 `download_via_lx()`、`build_lx_url()`、`probe_duration_ms()` 以及全部 `REASON_LX_*` 常量与 lx 相关辅助函数；文件只剩官方接口判定 + 外链下载这一条路，`download_by_id()` 核心逻辑未改。
+- **`main.py`**：删除 `_fetch_lx_audio()`、`_fetch_qq_audio()`、`_handle_qq_cover()` 与 `/qqrvc`、`/qqsvc`、`/qqsvcvc`、`/qq点歌` 四个 QQ 入口；`_fetch_netease_audio()` 去掉全部洛雪兜底，取不到整首直接失败。
+- **`_conf_schema.json`**：删除洛雪地址、洛雪认证头、洛雪兜底开关三项配置；`api.py` 里已废弃的第三方音源短路注释一并清掉。
+
+### 变更为只用网易云
+
+- `disable_qqmusic` 默认改为 `true` 并在代码里固定为 `True`（描述写明“已锁死只用网易云”）；`_resolve_music_source()` 无论调用方或配置怎么写，最终一律返回网易云。
+- `_prepare_song_audio()`：纯数字 → 网易云 id；旧的 QQ mid → 不再碰 QQ，直接按歌名去网易云搜，搜不到就失败；其它字符串 → 按歌名搜网易云；全部只过官方接口。
+- `_do_cover()` 与 `search_music()` 删掉 QQ 搜索分支与风控重试，网易云搜索失败直接给失败原因。
+- `default_api=qqmusic` 或未知值一律回落网易云并记 warning；`disable_netease` 保留读取但按网易云继续（只记 warning）。
+
+### 版本
+
+- 版本号 0.3.0；`metadata.yaml`、`README.md`、`NOTICE.md` 同步更新；`requirements.txt` 去掉已不再使用的 `qqmusic-api-python`。
+
+### 验证
+
+- 六个 Python 文件 `py_compile` 全过；`_conf_schema.json` JSON 解析通过；全目录 grep 确认无洛雪配置键、旧端口、失效域名残留。
+
 ## v0.2.2（2026-10-27）
 
 修网易云整首下载 403：官方接口只用来判定，下载改走外链跳转入口。
@@ -43,7 +68,7 @@
 
 - **批量翻唱不再把 id 交给中间层**：`_do_cover`（LLM 工具 / 批量走这条）和 `_send_song`（卡片 / 命令选歌走这条）都改成调统一入口，先拿到本地音频文件再提交；`song_input_for_api = str(selected_song["id"])` 这类写法已全部删除（grep 确认无残留）。
 - **修掉"网易云搜不到这首歌：<QQ mid>"的根因**：`default_api=qqmusic` 时 `self.api` 是 QQ 搜索器，而网易云分支直接复用它，拿到的 id 其实是 mid。现在网易云这条路固定用"确定是网易云"的搜索器（`_netease_search_api`），`self.api` 是 QQ 时临时新建 `NetEaseMusicAPI`。
-- **洛雪兜底支持多源**：`download_via_lx` 不再强制纯数字 id（`tx` 传 mid、`wy` 可传歌名），落盘文件名做了安全化处理；按歌名兜底时 URL 路径段做百分号编码（中文直接拼进 URL 会让 `urllib` 抛 `UnicodeEncodeError`）。
+- **洛雪兜底支持多源**：洛雪下载函数不再强制纯数字 id（`tx` 传 mid、`wy` 可传歌名），落盘文件名做了安全化处理；按歌名兜底时 URL 路径段做百分号编码（中文直接拼进 URL 会让 `urllib` 抛 `UnicodeEncodeError`）。
 - **批量报告只说人话**：每条失败改成"这首拿不到音源 / 生成超时了 / 这个引擎被禁用了"这类短句，中间层原始报错、重试次数等技术细节只进日志；批量整体异常的报告也收敛成一句。
 - `_fetch_netease_audio` 返回值补上"是否试听"，供统一入口串失败原因。
 
@@ -61,9 +86,9 @@
 
 - 新增 `netease.py`（纯标准库，不新增第三方依赖）：
   - `download_by_id(song_id, cookie, quality_br=320000, dest_dir, timeout=120) -> (路径|None, 失败原因, 是否试听)`：调官方接口 `GET https://music.163.com/api/song/enhance/player/url?ids=[<id>]&br=<码率>`，带 `Cookie: MUSIC_U=...`、`Referer: https://music.163.com`、`User-Agent: Mozilla/5.0`；成功就流式下载到本地，单文件上限 60MB。
-  - `download_via_lx(...)`：洛雪源兜底 `GET <lx_source_base>/link/wy/<id>/<音质>`，带 `X-LxM-Auth`。
+  - 洛雪源兜底函数：向本机洛雪服务要直链，带认证头，下完再量时长。
   - `judge_result(...)` / `is_cookie_failure(...)`：把"整首"判定和"这次算不算 cookie 问题"抽成纯函数，方便单测。
-- 配置项 7 个：`netease_cookie`、`netease_quality`、`lx_source_base`、`lx_source_key`、`enable_lx_fallback`、`alert_admin_on_cookie_expired`、`cookie_alert_interval_hours`。
+- 配置项 7 个：`netease_cookie`、`netease_quality`、洛雪地址、洛雪认证头、洛雪兜底开关、`alert_admin_on_cookie_expired`、`cookie_alert_interval_hours`。
 - cookie 失效提醒：连续 3 次取歌都因为 cookie 相关问题失败（没配置 / HTTP 401 / `code != 200` / 只给试听）时，私聊 AstrBot 全局配置里的 `admins_id`；读不到管理员就发回触发这次点歌的会话；同一失效状态按 `cookie_alert_interval_hours` 去重，取歌成功后清空状态。
 - `outbound.py` 新增 `alert` 出口（管理员提醒），与 `start/progress/retry/failed/done` 共用同一个"台词交给模型现编"的出口；`say()` 现在返回是否真的发出去（`bool`），方便管理员会话发不出去时降级重发。
 
@@ -102,7 +127,7 @@
 ### 修复
 
 - **QQ 音乐 mid 解析**：新版 `qqmusic-api-python` 返回结构里 `mid` 可能已经是字符串，直接读 `obj.mid` 会抛 `'str' object has no attribute 'mid'`（日志里表现为"官方API获取失败"）。新增 `_extract_mid()`：有 `mid` 属性就取 `mid`，本身是字符串就用它，其余视为拿不到；拿不到时记日志并降级，不把异常抛给用户。
-- **移除失效的备选音源接口**：`api.lolimi.cn` 域名已无法解析（2026-10-27 实测 `getaddrinfo failed`），该分支删除并短路返回，不再让每次重试白等一次 15 秒网络超时。
+- **移除失效的备选音源接口**：该域名已无法解析（2026-10-27 实测 `getaddrinfo failed`），分支删除并短路返回，不再让每次重试白等一次 15 秒网络超时。
 
 ### 验证
 

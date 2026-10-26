@@ -352,11 +352,8 @@ class QQMusicAPI:
             except Exception as e:
                 logger.error(f"第三方API获取失败: {e}")
         
-        # 方式3 已废弃并移除（2026-10-27 实测 api.lolimi.cn 域名解析失败 getaddrinfo failed）。
-        # 保留这段短路说明：以前每次重试都白等一次 15 秒网络超时，现在直接返回空串，
-        # 由上层按"没拿到链接"降级。将来若找到可用的备选接口，再在这里接入。
-        logger.debug("备选API2(api.lolimi.cn) 已废弃，跳过（域名已无法解析）")
-
+        # QQ 音源已于 0.3.0 下线，这里不再尝试其它第三方接口，直接返回空串，
+        # 由上层按"没拿到链接"处理。
         return ""
 
     async def fetch_lyrics(self, songmid: str) -> str:
