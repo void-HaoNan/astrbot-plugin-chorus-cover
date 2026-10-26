@@ -25,6 +25,14 @@
 - **QQ 音乐 mid 解析**：新版 `qqmusic-api-python` 返回结构里 `mid` 可能已经是字符串，直接读 `obj.mid` 会抛 `'str' object has no attribute 'mid'`（日志里表现为"官方API获取失败"）。新增 `_extract_mid()`：有 `mid` 属性就取 `mid`，本身是字符串就用它，其余视为拿不到；拿不到时记日志并降级，不把异常抛给用户。
 - **移除失效的备选音源接口**：`api.lolimi.cn` 域名已无法解析（2026-10-27 实测 `getaddrinfo failed`），该分支删除并短路返回，不再让每次重试白等一次 15 秒网络超时。
 
+### 验证
+
+- 五个 Python 文件 `py_compile` 全通过。
+- 全目录检索确认已无 `遇到风控，正在自动重试`、`正在从【` 这类硬编码文案，统一出口接线 17 处。
+- `outbound.py` 在 AstrBot 运行环境（uv 工具虚拟环境 python 3.12）跑行为测试 9 项全过：进度/重试默认静音、失败走模型、模型不可用退回兜底、`event.send` 抛异常被吞、开关打开后进度可发、未知类型静音。
+- 线上加载验证：AstrBot 重启后日志显示 `Plugin astrbot_plugin_chorus_cover (v0.1.0) by void-HaoNan`、`Added llm tool: smart_cover`、平台钩子正常，无异常堆栈；配置从上游插件迁入后 `rvc_base_url`、8 个模型、两个新开关均正确。
+- 未覆盖：`main.py` 17 处接线的运行时行为（需要真实点一首歌才能验证）。
+
 ### 说明
 
 - 本分支**不再跟随上游更新**，需要上游新功能请直接使用上游仓库版本。
