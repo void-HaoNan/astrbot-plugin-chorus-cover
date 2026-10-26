@@ -132,16 +132,16 @@ class MusicPlugin(Star):
         self._netease_cookie_fail_streak = 0
         self._cookie_alert_sent_at = 0.0
         
-        if self.default_api == "netease":
-            from .api import NetEaseMusicAPI
-            self.api = NetEaseMusicAPI()
-        else:
-            if self.default_api != "netease_nodejs":
-                logger.warning(
-                    f"default_api={self.default_api} 已不支持（QQ 音源下线），改用网易云"
-                )
+        if self.default_api == "netease_nodejs":
             from .api import NetEaseMusicAPINodeJs
             self.api = NetEaseMusicAPINodeJs(base_url=self.nodejs_base_url)
+        else:
+            if self.default_api != "netease":
+                logger.warning(
+                    f"default_api={self.default_api} 已不支持（QQ 音源下线），改用网易云官方接口"
+                )
+            from .api import NetEaseMusicAPI
+            self.api = NetEaseMusicAPI()
 
         # === 新增配置项 ===
         self.llm_force_mode = config.get("llm_force_mode", False)

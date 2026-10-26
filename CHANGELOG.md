@@ -18,7 +18,7 @@
 - `disable_qqmusic` 默认改为 `true` 并在代码里固定为 `True`（描述写明“已锁死只用网易云”）；`_resolve_music_source()` 无论调用方或配置怎么写，最终一律返回网易云。
 - `_prepare_song_audio()`：纯数字 → 网易云 id；旧的 QQ mid → 不再碰 QQ，直接按歌名去网易云搜，搜不到就失败；其它字符串 → 按歌名搜网易云；全部只过官方接口。
 - `_do_cover()` 与 `search_music()` 删掉 QQ 搜索分支与风控重试，网易云搜索失败直接给失败原因。
-- `default_api=qqmusic` 或未知值一律回落网易云并记 warning；`disable_netease` 保留读取但按网易云继续（只记 warning）。
+- `default_api=qqmusic` 或未知值一律回落网易云官方接口并记 warning；`disable_netease` 保留读取但按网易云继续（只记 warning）。
 
 ### 版本
 
