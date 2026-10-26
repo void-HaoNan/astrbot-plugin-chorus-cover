@@ -23,7 +23,7 @@
 
 - **批量翻唱不再把 id 交给中间层**：`_do_cover`（LLM 工具 / 批量走这条）和 `_send_song`（卡片 / 命令选歌走这条）都改成调统一入口，先拿到本地音频文件再提交；`song_input_for_api = str(selected_song["id"])` 这类写法已全部删除（grep 确认无残留）。
 - **修掉"网易云搜不到这首歌：<QQ mid>"的根因**：`default_api=qqmusic` 时 `self.api` 是 QQ 搜索器，而网易云分支直接复用它，拿到的 id 其实是 mid。现在网易云这条路固定用"确定是网易云"的搜索器（`_netease_search_api`），`self.api` 是 QQ 时临时新建 `NetEaseMusicAPI`。
-- **洛雪兜底支持多源**：`download_via_lx` 不再强制纯数字 id（`tx` 传 mid、`wy` 可传歌名），落盘文件名做了安全化处理。
+- **洛雪兜底支持多源**：`download_via_lx` 不再强制纯数字 id（`tx` 传 mid、`wy` 可传歌名），落盘文件名做了安全化处理；按歌名兜底时 URL 路径段做百分号编码（中文直接拼进 URL 会让 `urllib` 抛 `UnicodeEncodeError`）。
 - **批量报告只说人话**：每条失败改成"这首拿不到音源 / 生成超时了 / 这个引擎被禁用了"这类短句，中间层原始报错、重试次数等技术细节只进日志；批量整体异常的报告也收敛成一句。
 - `_fetch_netease_audio` 返回值补上"是否试听"，供统一入口串失败原因。
 

@@ -37,6 +37,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any, Optional, Tuple
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -404,6 +405,19 @@ def _probe_duration_ms(path: str) -> Optional[int]:
         return None
 
 
+def build_lx_url(base_url: str, source: str, song_id: str, quality: str = "320k") -> str:
+    """拼洛雪接口地址。
+
+    ``song_id`` 可能是中文歌名（``/link/wy/<歌名>`` 这条兜底），直接拼进 URL 会让
+    ``urllib`` 在发送时抛 UnicodeEncodeError，所以这里按路径段做一次百分号编码。
+    """
+    base = str(base_url or "").strip().rstrip("/")
+    src = str(source or "wy").strip().lower() or "wy"
+    key = quote(str(song_id or "").strip(), safe="")
+    quality_text = str(quality or "320k").strip() or "320k"
+    return f"{base}/link/{src}/{key}/{quality_text}"
+
+
 def probe_duration_ms(path: str) -> Optional[int]:
     """公开的时长测量（毫秒）：插件侧给 QQ 直链 / 本地文件做 80 秒闸门时调用。"""
     return _probe_duration_ms(path)
@@ -510,7 +524,7 @@ def download_via_lx(
         return None, REASON_LX_NO_BASE, False
 
     dest = dest_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_audio")
-    url = f"{base_url}/link/{source}/{song_id}/{quality or '320k'}"
+    url = build_lx_url(base_url, source, song_id, quality)
     headers = {
         "X-LxM-Auth": str(auth_key or ""),
         "User-Agent": DEFAULT_USER_AGENT,
