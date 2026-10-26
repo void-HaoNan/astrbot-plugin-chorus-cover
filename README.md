@@ -18,7 +18,7 @@
 
 适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的 AI 翻唱插件，支持 **RVC、SVC-Fusion、SoulX-SVCVC** 三种语音转换后端，以及网易云音乐、本地音频和 LLM 工具调用（QQ 音源已于 0.3.0 下线）。
 
-> 当前版本：**v0.3.1**（自维护分支，基线为上游 v2.13.0）
+> 当前版本：**v0.4.0**（自维护分支，基线为上游 v2.13.0）
 >
 > 许可证：**GNU AGPL-3.0**
 >
@@ -219,6 +219,7 @@ SoulX-SVCVC 使用参考音频进行零样本音色转换，不需要训练 `.pt
 | `disable_qqmusic` | `true` | 已锁死只用网易云：搜歌与取歌都只走网易云官方接口 + cookie |
 | `netease_cookie` | 空 | 网易云 `MUSIC_U` 值，官方接口取整首必需；只存本机 |
 | `netease_quality` | `320` | 网易云取歌音质，只支持 `128` / `192` / `320` |
+| `netease_api_base` | `http://127.0.0.1:3000` | 本地 NeteaseCloudMusicApi 服务地址（首选取歌路径）；留空只用外链方式 |
 | `alert_admin_on_cookie_expired` | `true` | cookie 连续失效时提醒管理员 |
 | `cookie_alert_interval_hours` | `6` | 同一失效状态的最小提醒间隔（小时） |
 | `enable_progress_bar` | `true` | 将后端进度发到聊天 |
@@ -231,15 +232,24 @@ SoulX-SVCVC 使用参考音频进行零样本音色转换，不需要训练 `.pt
 
 SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时提高到 `9000` 秒。
 
-### 网易云取歌（官方接口 + cookie）
+### 网易云取歌（本地服务优先 + 官方接口兜底）
 
-网易云点歌不再把歌曲 id 直接丢给中间层（中间层不认 id），而是插件先下载成整首音频文件，再把本地路径交给中间层：
+网易云点歌不再把歌曲 id 直接丢给中间层（中间层不认 id），而是插件先下载成整首音频文件，再把本地路径交给中间层。0.4.0 起取歌有两条路，**先本地服务、失败再回落官方接口**：
+
+**① 本地 NeteaseCloudMusicApi 服务（首选，能下会员歌）**
+
+1. 在 `D:\PYMSS-RVC\netease-api` 下跑 `start.ps1` 把服务常驻起来（默认 `http://127.0.0.1:3000`；本机 3000/3001 已被 SnowLuma 占用，实际监听 **3003**）。
+2. 配置 `netease_api_base` 指到这个服务（线上填 `http://127.0.0.1:3003`）。
+3. 插件调 `GET {base}/song/url/v1?id=<id>&level=exhigh&cookie=MUSIC_U%3D<值>`，服务返回的 CDN 直链带时间签名，实测**能整首下会员歌**（`657666` 245.9 秒、`536622304` 256.0 秒、`2652820720` 279.0 秒，320k），下载仍受 60MB / `ffprobe` 80 秒闸门约束。
+4. `level` 由 `netease_quality` 决定：`320`→`exhigh`、`192`→`higher`、`128`→`standard`。
+
+**② 官方接口 + 外链（兜底）**
 
 1. 配置 `netease_cookie`：浏览器登录 `music.163.com`，开发者工具 → Application → Cookies，复制 `MUSIC_U` 的值（只填值，不带 `MUSIC_U=`）。cookie 只保存在本机插件配置里。
 2. 插件调官方接口 `GET https://music.163.com/api/song/enhance/player/url?ids=[<id>]&br=<码率>` **只为判定**；判定通过后不用它给的 `data[0].url`（该 CDN 直链实测 403），改从外链跳转入口 `GET https://music.163.com/song/media/outer/url?id=<id>.mp3`（带同样的 `Cookie` / `Referer` / `User-Agent`，跟随 302）流式下载（单文件上限 60MB，落在 `temp_audio/`，任务结束自动清理）。
-3. **整首判定**（五条全满足才算成功）：HTTP 200、`code == 200`、`data[0].url` 非空、`data[0].freeTrialInfo` 为 `null`、`data[0].time >= 80000`（毫秒）。只给试听片段的返回会被判失败，不会送进翻唱流程；判定失败也不会再退回外链重试。
+3. **整首判定**（两条路同一套，五条全满足才算成功）：HTTP 200、`code == 200`、`data[0].url` 非空、`data[0].freeTrialInfo` 为 `null`、`data[0].time >= 80000`（毫秒）。只给试听片段的返回会被判失败，不会送进翻唱流程。
 4. 下载完成后再用 `ffprobe` 量一次真实时长，不足 80000ms 的删文件判失败（原因写“下载到的不是整首（时长 xx 秒）”）；下载请求失败时原因里带 HTTP 状态。
-5. 0.3.0 起没有洛雪兜底，也没有任何第三方音源：官方接口取不到整首（没 cookie、cookie 失效、只给试听、网络错误）就直接失败并说明原因，绝不把试听片段交给中间层。
+5. 两条路都失败才判失败并说明原因（本地服务连不上时会记一条 `本地网易云服务连不上`，然后回落官方接口），绝不把试听片段交给中间层。
 6. 连续 3 次取歌都因为 cookie 相关问题（没配置、HTTP 401、`code != 200`、只给试听）失败时，私聊 AstrBot 全局配置里的 `admins_id` 提醒更新 cookie；找不到管理员就发回触发点歌的会话。同一失效状态按 `cookie_alert_interval_hours` 去重，取歌成功后状态清空。
 
 **统一取歌顺序**（卡片选歌、命令点歌、LLM 工具、批量翻唱全部共用 `_prepare_song_audio`，任何入口都不会再把 id / mid 原样交给中间层）：本地文件直通 → 纯数字按网易云 id（官方接口 + cookie）→ 11~14 位字母数字的旧 QQ mid（不再碰任何 QQ 音源，直接按歌名去网易云搜，搜不到就失败）→ 其它当歌名（先搜网易云拿数字 id，再回上一步）；每一步下完都用 `ffprobe` 卡 80 秒，60 秒试听一律判失败，失败原因串成一句中文。
@@ -350,13 +360,24 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 
 ### 网易云提示“拿不到整首歌”
 
-先看日志里的失败原因：`netease_cookie` 是否填写且没过期（重新登录复制 `MUSIC_U`）、`netease_quality` 是否为 `128` / `192` / `320`、本机有没有 `ffprobe`。插件只接受“整首”（≥ 80 秒且不是试听片段），60 秒的试听返回会被直接判失败。接口判定通过后用外链入口 `song/media/outer/url` 下载（不要再用接口给的 CDN 直链，那条会 403），下载失败时日志/原因里会带 HTTP 状态方便定位。
+先看日志里的失败原因：`netease_cookie` 是否填写且没过期（重新登录复制 `MUSIC_U`）、`netease_api_base` 指的服务是否活着（`netstat -ano | findstr :3003`，或看 `D:\PYMSS-RVC\netease-api\logs\server.log`）、`netease_quality` 是否为 `128` / `192` / `320`、本机有没有 `ffprobe`。插件只接受“整首”（≥ 80 秒且不是试听片段），60 秒的试听返回会被直接判失败。会员歌（`fee=1`）走本地服务能下，官方接口那条路会被 CDN 403 / 外链返回 HTML，需要确认本地服务在跑。
+
+### 本地取歌服务起不来 / 端口冲突
+
+`3000`、`3001` 在本机已经被 SnowLuma 占用，服务会自动换到 `3003`。起服务用 `D:\PYMSS-RVC\netease-api\start.ps1`，然后把插件配置 `netease_api_base` 改成实际端口；`start.ps1` 里的 `$Port` 也可以改。
 
 ### SoulX 无法命中缓存
 
 检查 `svcvc_random_seed` 是否关闭。歌曲内容、参考音色、种子、采样步数、CFG、升降调或模型资产变化都会生成新的缓存键。
 
 ## 更新日志
+
+### v0.4.0（本分支）
+
+- 新增取歌路径 `netease.download_by_api_service()`：调本地 NeteaseCloudMusicApi 的 `/song/url/v1` 换带时间签名的 CDN 直链后下载，**能下会员歌**；失败再回落原来的官方接口 + 外链方式。
+- 新增配置项 `netease_api_base`（默认 `http://127.0.0.1:3000`），指向本地服务；留空则只用外链方式。
+- 两条路共用同一套整首闸门（接口五条判定 + `ffprobe` 80 秒），会员歌不再因为官方接口只给试听/HTML 就直接失败。
+- 实测：`657666` 245.9 秒、`536622304` 256.0 秒、`2652820720` 279.0 秒，均 320k 整首。
 
 ### v0.3.1（本分支）
 

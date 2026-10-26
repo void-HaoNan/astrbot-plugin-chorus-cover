@@ -1,4 +1,4 @@
-﻿"""网易云整首歌下载：官方取直链接口 + MUSIC_U cookie（chorus_cover 自维护分支）。
+"""网易云整首歌下载：官方取直链接口 + MUSIC_U cookie（chorus_cover 自维护分支）。
 
 设计约定
 ========
@@ -22,6 +22,10 @@
    拿不到时长时按失败处理（宁可不出歌，也不把 60 秒片段交给中间层）。
 4. 0.3.0 起只保留网易云官方接口这一条路：没有第三方音源兜底，也没有别的
    取歌入口。取不到整首就失败，不会把试听片段交给中间层。
+5. 0.4.0 起多一条**首选**路径：本机跑一个 NeteaseCloudMusicApi 服务，用它的
+   ``/song/url/v1`` 拿直链（它给的 CDN 链接带时间签名，实测能整首下下来，
+   ``song/url/v1`` 320k 三首样本 245/256/279 秒全部通过），失败再回落上面的
+   官方接口 + 外链方式。两条路都过同一套"整首"闸门（接口判定 + ffprobe 80 秒）。
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ import shutil
 import subprocess
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Optional, Tuple
 
@@ -46,6 +51,11 @@ OFFICIAL_REFERER = "https://music.163.com"
 
 #: 音频下载入口：接口给的 CDN 直链实测 403，这个外链入口会 302 到可用节点
 MEDIA_OUTER_URL = "https://music.163.com/song/media/outer/url?id={song_id}.mp3"
+
+#: 0.4.0 起首选：本地 NeteaseCloudMusicApi 服务的默认地址
+DEFAULT_API_BASE = "http://127.0.0.1:3000"
+#: 音质档位 → NeteaseCloudMusicApi 的 level 参数
+API_LEVELS = ((320000, "exhigh"), (192000, "higher"), (128000, "standard"))
 #: 音频下载的请求头（和接口那套分开维护，改一边不影响另一边）
 MEDIA_USER_AGENT = "Mozilla/5.0"
 MEDIA_REFERER = "https://music.163.com"
@@ -79,6 +89,8 @@ REASON_DL_NO_TIME = "下载完量不到时长，无法确认是整首"
 REASON_DL_TOO_SHORT = "下载到的不是整首（时长 {seconds} 秒）"
 REASON_CODE = "接口 code={code}"
 REASON_REQUEST_FAILED = "接口请求失败"
+REASON_API_BASE = "没配置本地取歌服务地址"
+REASON_API_UNREACHABLE = "本地网易云服务连不上"
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +494,117 @@ def download_by_id(
         timeout,
         headers=_media_headers(cookie),
         prefix=f"nt_{song_id}",
+    )
+    if not path:
+        return None, download_reason or REASON_DOWNLOAD, False
+
+    length = _probe_duration_ms(path)
+    if length is None:
+        logger.warning("下载完量不到真实时长，按失败处理: id=%s file=%s", song_id, path)
+        _remove_quietly(path)
+        return None, REASON_DL_NO_TIME, False
+    if length < MIN_FULL_LENGTH_MS:
+        seconds = int(round(length / 1000))
+        logger.warning("下载到的不是整首: id=%s 时长=%sms", song_id, length)
+        _remove_quietly(path)
+        return None, REASON_DL_TOO_SHORT.format(seconds=seconds), True
+    return path, "", False
+
+
+# ---------------------------------------------------------------------------
+# 0.4.0 新增：本地 NeteaseCloudMusicApi 服务取歌
+# ---------------------------------------------------------------------------
+def api_service_level(quality_br: int) -> str:
+    """把插件里的码率配置（320000/192000/128000）换成服务的 ``level`` 参数。"""
+    try:
+        br = int(quality_br or 320000)
+    except (TypeError, ValueError):
+        br = 320000
+    for bitrate, level in API_LEVELS:
+        if br >= bitrate:
+            return level
+    return "standard"
+
+
+def normalize_api_base(base_url: Any) -> str:
+    """把服务地址收拾成 ``http(s)://host:port``（去空格、去尾部斜杠）。"""
+    text = str(base_url or "").strip()
+    if not text:
+        return ""
+    if not text.lower().startswith(("http://", "https://")):
+        text = "http://" + text
+    return text.rstrip("/")
+
+
+def download_by_api_service(
+    song_id: Any,
+    cookie: str,
+    base_url: Any,
+    quality_br: int = 320000,
+    dest_dir: Optional[str] = None,
+    timeout: float = 120,
+) -> Tuple[Optional[str], str, bool]:
+    """走本地 NeteaseCloudMusicApi（``/song/url/v1``）拿直链并下到本地。
+
+    这条路是 0.4.0 的首选：服务用 cookie 换到的 CDN 直链带时间签名，实测
+    ``/song/url/v1?level=exhigh`` 三首会员歌（657666 / 536622304 / 2652820720）
+    都能整首下完，时长 245.9 / 256.0 / 279.0 秒。判定标准和外链方式完全一致：
+    接口要 ``code=200``、``url`` 非空、``freeTrialInfo`` 为 null、``time >= 80000``，
+    下载完再用 ``ffprobe`` 量一次真实时长，不足 80 秒直接删掉判失败。
+
+    Args:
+        song_id: 网易云数字歌曲 id。
+        cookie: 网易云 ``MUSIC_U`` 的值（不含 ``MUSIC_U=`` 前缀）。
+        base_url: 本地服务地址，例如 ``http://127.0.0.1:3000``。
+        quality_br: 码率，默认 320000（对应 ``level=exhigh``）。
+        dest_dir: 落盘目录，默认插件目录下的 ``temp_audio``。
+        timeout: 单次网络请求超时（秒）。
+
+    Returns:
+        ``(本地路径 或 None, 失败原因, 是否试听)``；成功时失败原因为空串。
+    """
+    song_id = str(song_id if song_id is not None else "").strip()
+    cookie = str(cookie or "").strip()
+    base = normalize_api_base(base_url)
+    if not base:
+        return None, REASON_API_BASE, False
+    if not cookie:
+        return None, REASON_NO_COOKIE, False
+    if not song_id.isdigit():
+        return None, REASON_BAD_ID, False
+
+    level = api_service_level(quality_br)
+    # cookie 必须整段带上 MUSIC_U= 前缀并做 URL 编码，服务端才认
+    encoded_cookie = urllib.parse.quote(f"MUSIC_U={cookie}", safe="")
+    api_url = f"{base}/song/url/v1?id={song_id}&level={level}&cookie={encoded_cookie}"
+
+    status, payload, error = _fetch_json(api_url, _api_headers(cookie), timeout)
+    if error:
+        logger.warning(
+            "本地网易云服务请求失败: id=%s base=%s (%s)", song_id, base, error
+        )
+        return None, REASON_API_UNREACHABLE, False
+
+    link, reason, is_trial = judge_result(payload, status)
+    if reason:
+        logger.warning(
+            "本地网易云服务没给整首: id=%s level=%s status=%s reason=%s trial=%s",
+            song_id,
+            level,
+            status,
+            reason,
+            is_trial,
+        )
+        return None, reason, is_trial
+
+    dest = dest_dir or os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_audio")
+    logger.debug("本地服务给的直链，开始下载: id=%s url=%s", song_id, link)
+    path, download_reason = _download_file(
+        link,
+        dest,
+        timeout,
+        headers=_media_headers(cookie),
+        prefix=f"ntapi_{song_id}",
     )
     if not path:
         return None, download_reason or REASON_DOWNLOAD, False

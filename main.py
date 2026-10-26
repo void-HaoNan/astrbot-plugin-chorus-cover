@@ -64,7 +64,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱（自维护分支，基于 matsuko_cover 2.13.0，AGPL-3.0）：对话出口统一走模型、失败结果结构化",
-    "0.3.1",
+    "0.4.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -118,6 +118,15 @@ class MusicPlugin(Star):
             logger.warning(f"netease_quality={quality} 不在 128/192/320 之内，已按 320 处理")
             quality = 320
         self.netease_quality = quality
+        # 0.4.0：本地 NeteaseCloudMusicApi 服务地址（首选取歌路径，留空则只用外链方式）
+        raw_api_base = str(config.get("netease_api_base", "") or "").strip()
+        self.netease_api_base = netease.normalize_api_base(raw_api_base)
+        if raw_api_base and not self.netease_api_base:
+            logger.warning(f"netease_api_base={raw_api_base} 不像是可用地址，已忽略")
+        if self.netease_api_base:
+            logger.info(f"网易云取歌首选本地服务: {self.netease_api_base}")
+        else:
+            logger.info("没配置 netease_api_base，网易云取歌只走官方接口 + 外链方式")
         self.alert_admin_on_cookie_expired = bool(
             config.get("alert_admin_on_cookie_expired", True)
         )
@@ -952,7 +961,7 @@ class MusicPlugin(Star):
     async def _fetch_netease_audio(
         self, event: AstrMessageEvent, song_id: str, song_name: str = ""
     ) -> tuple[Optional[str], str, bool]:
-        """取网易云整首歌：官方接口 + MUSIC_U cookie，取不到整首就失败。
+        """取网易云整首歌：优先本地 NeteaseCloudMusicApi 服务，失败回落官方接口+外链。
 
         Returns:
             ``(本地文件路径 或 None, 失败原因, 是否试听)``。成功时失败原因为空串。
@@ -962,27 +971,56 @@ class MusicPlugin(Star):
         reason = netease.REASON_NO_COOKIE
         is_trial = False
 
-        if cookie:
+        if not cookie:
+            logger.warning("没有配置 netease_cookie，取不到整首（没有备用音源）")
+            await self._record_netease_cookie_failure(event, reason, is_trial)
+            return None, reason, is_trial
+
+        api_base = str(getattr(self, "netease_api_base", "") or "").strip()
+
+        # ① 首选：本地 NeteaseCloudMusicApi 服务换直链后下载
+        if api_base:
             logger.info(
-                f"网易云官方接口取整首: id={song_id} br={self._netease_quality_br()} "
+                f"网易云本地服务取整首: id={song_id} base={api_base} "
                 f"song={song_name}"
             )
-            await self._send_progress_notice(event, step="正在取网易云直链", song=song_name)
+            await self._send_progress_notice(event, step="正在从本地服务取网易云直链", song=song_name)
             path, reason, is_trial = await asyncio.to_thread(
-                netease.download_by_id,
+                netease.download_by_api_service,
                 song_id,
                 cookie,
+                api_base,
                 self._netease_quality_br(),
                 dest_dir,
                 120,
             )
             if path:
                 self._reset_netease_cookie_state()
-                logger.info(f"网易云官方接口下载成功: id={song_id} file={path}")
+                logger.info(f"网易云本地服务下载成功: id={song_id} file={path}")
                 return path, "", False
-            logger.warning(f"网易云官方接口没拿到整首: id={song_id} reason={reason}")
-        else:
-            logger.warning("没有配置 netease_cookie，取不到整首（0.3.0 起没有备用音源）")
+            logger.warning(
+                f"网易云本地服务没拿到整首，回落外链方式: id={song_id} reason={reason}"
+            )
+
+        # ② 回落：官方接口判定 + 外链入口下载
+        logger.info(
+            f"网易云官方接口取整首: id={song_id} br={self._netease_quality_br()} "
+            f"song={song_name}"
+        )
+        await self._send_progress_notice(event, step="正在取网易云直链", song=song_name)
+        path, reason, is_trial = await asyncio.to_thread(
+            netease.download_by_id,
+            song_id,
+            cookie,
+            self._netease_quality_br(),
+            dest_dir,
+            120,
+        )
+        if path:
+            self._reset_netease_cookie_state()
+            logger.info(f"网易云官方接口下载成功: id={song_id} file={path}")
+            return path, "", False
+        logger.warning(f"网易云官方接口也没拿到整首: id={song_id} reason={reason}")
 
         await self._record_netease_cookie_failure(event, reason, is_trial)
         return None, reason, is_trial

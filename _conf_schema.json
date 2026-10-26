@@ -70,10 +70,16 @@
   "netease_quality": {
     "description": "网易云取歌音质（kbps）",
     "type": "int",
-    "hint": "官方接口的码率档位，只支持 128 / 192 / 320 三档，默认 320。填其它值会按 320 处理。",
+    "hint": "官方接口的码率档位，只支持 128 / 192 / 320 三档，默认 320。填其它值会按 320 处理。本地服务取歌时对应 level 参数：320→exhigh、192→higher、128→standard。",
     "default": 320,
     "minimum": 128,
     "maximum": 320
+  },
+  "netease_api_base": {
+    "description": "本地 NeteaseCloudMusicApi 服务地址（首选取歌路径）",
+    "type": "string",
+    "hint": "在 D:\\PYMSS-RVC\\netease-api 下用 start.ps1 起的那个服务，默认 http://127.0.0.1:3000。插件会先用它换带签名的 CDN 直链再下载（能下会员歌），拿不到才回落原来的官方接口 + 外链方式；留空表示只用外链方式。端口被别的程序占了时，把这里改成实际端口（例如服务起在 3003 就填 http://127.0.0.1:3003）。",
+    "default": "http://127.0.0.1:3000"
   },
   "alert_admin_on_cookie_expired": {
     "description": "网易云 cookie 连续失效时提醒管理员",

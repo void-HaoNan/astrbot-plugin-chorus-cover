@@ -3,6 +3,48 @@
 本文件记录 **astrbot_plugin_chorus_cover**（副歌翻唱 · 自维护分支）的变更。
 上游 `sdfsfsk/matsuko_cover` 的历史日志请见上游仓库，此处只记本分支的差异。
 
+## v0.4.0（2026-10-27）
+
+新增"本地 NeteaseCloudMusicApi 服务"取歌路径：能下会员歌，官方接口取不到时不再
+只剩失败一条路。
+
+### 背景
+
+官方 `api/song/enhance/player/url` 能返回链接，但直连 CDN 一律 403；`outer/url`
+对 `fee=1` 的会员歌只返回 HTML。实测两首失败样本：`657666`（残酷な天使のテーゼ）、
+`536622304`（Lemon）；成功样本 `2652820720`（晴天）。
+
+### 新增
+
+- **`netease.py`**：新增 `download_by_api_service(song_id, cookie, base_url, quality_br,
+  dest_dir, timeout)` —— 调本地服务的 `/song/url/v1` 换带时间签名的 CDN 直链再下载，
+  判定沿用同一套整首闸门（`code=200`、`url` 非空、`freeTrialInfo` 为 null、
+  `time >= 80000`），下载完再用 `ffprobe` 量真实时长，不足 80 秒删文件判失败。
+- 配套小函数：`api_service_level()`（320000→`exhigh`、192000→`higher`、128000→`standard`）、
+  `normalize_api_base()`（补 `http://`、去尾部斜杠）。
+- 新增失败原因：`REASON_API_BASE`（没配置地址）、`REASON_API_UNREACHABLE`（服务连不上）。
+- **`main.py`**：读取 `netease_api_base`；`_fetch_netease_audio()` 改成两条路——先本地服务，
+  失败再回落原来的官方接口 + 外链方式；两条都失败才记一次 cookie 相关失败。
+- **`_conf_schema.json`**：新增 `netease_api_base`（`string`，默认 `http://127.0.0.1:3000`，中文说明）。
+
+### 实测（本地服务 `127.0.0.1:3003`）
+
+| 歌曲 id | 接口 | 状态 | 时长 |
+| --- | --- | --- | --- |
+| 657666 残酷な天使のテーゼ | `/song/url/v1?level=exhigh` | 200 / 320k / 9.38MB | 245.9 秒 |
+| 536622304 Lemon | 同上 | 200 / 320k / 9.77MB | 256.0 秒 |
+| 2652820720 晴天 | 同上 | 200 / 320k / 10.65MB | 279.0 秒 |
+
+### 部署提醒
+
+- 端口 `3000`、`3001` 已被本机 SnowLuma 占用，实际服务起在 `3003`；线上插件配置里
+  `netease_api_base` 填的是 `http://127.0.0.1:3003`，schema 默认值仍是 3000。
+- 服务用 `D:\PYMSS-RVC\netease-api\start.ps1` 后台常驻，日志在 `netease-api\logs\server.log`。
+
+### 版本
+
+- `metadata.yaml`、`main.py` 的 `@register` 版本号升到 `0.4.0`，README 配置表与更新日志同步。
+
 ## v0.3.1（2026-10-27）
 
 新增 RVC 默认音色下拉配置 `rvc_default_model`，不用再靠序号记音色。
