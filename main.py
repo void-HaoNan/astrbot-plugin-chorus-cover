@@ -91,7 +91,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.10.1",
+    "0.11.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -111,6 +111,9 @@ class MusicPlugin(Star):
         )
         
         self.rvc_models_keywords = config.get("rvc_models_keywords", [])
+        # 0.11.0：音色模型文件夹。留空=用中间层默认目录；填了会拿去和中间层核对
+        self.rvc_models_dir = str(config.get("rvc_models_dir", "") or "").strip()
+        self._models_dir_info = {}
         self.enable_rvc = config.get("enable_rvc", True)
 
         self.inference_timeout = config.get("inference_timeout", 300)
@@ -1817,17 +1820,50 @@ class MusicPlugin(Star):
         return final_shift
 
     async def _update_models_from_api(self):
-        """从 RVC 后端拉一遍模型列表，保留已配的别名后写回插件配置。"""
+        """从 RVC 后端拉一遍模型列表，保留已配的别名后写回插件配置。
+
+        0.11.0：优先用中间层的 ``/model_info``，它除了模型列表还带「模型文件夹」
+        （绝对路径、.pth 数量、来源）。中间层还是老版本（没这个接口）就退回
+        ``/show_model``，功能不受影响，只是拿不到目录信息。
+        """
         base_url = self.rvc_base_url
+        info = {}
+        model_list_from_api = None
         async with self._get_gradio_client(base_url) as client:
-            try:
-                model_list_from_api = await self._async_predict(client, api_name="/show_model")
-            except Exception as e:
-                logger.warning(f"第一次获取模型列表失败，重试中: {e}")
-                model_list_from_api = await self._async_predict(client, api_name="/show_model")
+            if self._client_supports_api(client, "/model_info") is not False:
+                try:
+                    info = await self._async_predict(
+                        client,
+                        models_dir=self.rvc_models_dir,
+                        api_name="/model_info",
+                        timeout=60,
+                    )
+                except Exception as e:
+                    logger.warning(f"读取模型目录失败，改用 /show_model: {e}")
+                    info = {}
+
+            if isinstance(info, dict) and isinstance(info.get("models"), list):
+                model_list_from_api = info["models"]
+            else:
+                try:
+                    model_list_from_api = await self._async_predict(client, api_name="/show_model")
+                except Exception as e:
+                    logger.warning(f"第一次获取模型列表失败，重试中: {e}")
+                    model_list_from_api = await self._async_predict(client, api_name="/show_model")
 
         if not isinstance(model_list_from_api, list):
             raise ValueError(f"获取模型列表失败: {model_list_from_api}")
+
+        self._models_dir_info = info if isinstance(info, dict) else {}
+        if self._models_dir_info.get("dir"):
+            logger.info(
+                "RVC 模型目录：%s（%d 个 .pth，来源：%s）",
+                self._models_dir_info.get("dir"),
+                int(self._models_dir_info.get("count") or 0),
+                self._models_dir_info.get("source") or "中间层",
+            )
+            if self._models_dir_info.get("warning"):
+                logger.warning("RVC 模型目录有疑点：%s", self._models_dir_info["warning"])
 
         old_aliases = {}
         for item_str in self.rvc_models_keywords:
@@ -2174,6 +2210,24 @@ class MusicPlugin(Star):
             "这个选择只在声明支持 msst_model 参数的中间层上生效。" + sync_text,
         )
 
+    def _models_dir_note(self) -> str:
+        """把「音色模型放在哪个文件夹 / 对不对」压成几行给人看（0.11.0）。"""
+        info = getattr(self, "_models_dir_info", None) or {}
+        directory = info.get("dir") or self.rvc_models_dir
+        if not directory:
+            return ""
+        lines = [f"\n📁 模型文件夹：{directory}"]
+        if info:
+            lines.append(
+                f"（{info.get('count', 0)} 个 .pth，来源：{info.get('source', '中间层')}）"
+            )
+        elif self.rvc_models_dir:
+            lines.append("（还没核对过，发一次 /刷新rvc模型 可以确认中间层是否在用这个目录）")
+        warning = info.get("warning")
+        if warning:
+            lines.append(f"\n⚠️ {warning}")
+        return "\n".join(lines)
+
     @filter.command("刷新rvc模型")
     async def refresh_rvc_models(self, event: AstrMessageEvent):
         yield event.plain_result("正在刷新 RVC 模型列表，请稍候...")
@@ -2182,7 +2236,8 @@ class MusicPlugin(Star):
             yield event.plain_result("刷新成功！")
             display_str, _ = self.get_models_display_list()
             display_str = display_str or "未发现任何模型。"
-            await self.selection_ui.send_list(event, f"当前 RVC 可用模型：\n{display_str}")
+            note = self._models_dir_note()
+            await self.selection_ui.send_list(event, f"当前 RVC 可用模型：\n{display_str}{note}")
         except Exception as e:
             logger.error(traceback.format_exc())
             yield event.plain_result(f"刷新 RVC 模型出错了: {e}")
@@ -2935,6 +2990,9 @@ class MusicPlugin(Star):
 
             status = "RVC ✅" if self.enable_rvc else "RVC ❌(已禁用)"
             result_parts.append(f"\n🔧 引擎状态: {status}")
+            note = self._models_dir_note()
+            if note:
+                result_parts.append(note)
 
             return "\n".join(result_parts)
         except Exception as e:

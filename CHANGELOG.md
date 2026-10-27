@@ -6,6 +6,35 @@
 0.9.0 之前的条目保留发布当时的原文；其中提到的引擎、命令与配置已在 0.9.0 移除，
 现在只剩 RVC 一条链路，以本文件最上方与 `README.md` 为准。
 
+## v0.11.0（2026-10-28）
+
+**补上「音色模型文件夹」入口**。之前设置页有模型别名、有默认音色下拉，却没有一处说明
+`.pth` 到底该放哪，新用户只能猜。
+
+### 新增
+
+- 配置项 `rvc_models_dir`：音色模型文件夹。留空 = 自动用中间层实际目录（默认
+  `<RVC 整合包>\assets\weights`）；填了会作为 `models_dir` 传给中间层 `/model_info` 核对。
+- `/刷新rvc模型` 的结果末尾新增 `📁 模型文件夹：<绝对路径>（N 个 .pth，来源：…）`；
+  目录不存在、里面没有 `.pth`、或和中间层正在用的目录不一致时，追加 `⚠️` 说明。
+- `get_available_models`（LLM 工具）同样带上这一行，模型列表和目录一起交给模型。
+- `_update_models_from_api` 优先调中间层 `/model_info`（0.9.0 新增），拿不到就退回
+  `/show_model`，老版本中间层不受影响。
+
+### 说明
+
+- 只改插件里的 `rvc_models_dir` **不会**让 RVC 换目录：RVC 只认自己进程里的
+  `weight_root`。正确做法是给中间层设 `CHORUS_WEIGHTS_DIR` 并重启，中间层会把它传给
+  RVC；插件这边填同一个路径用于核对。README 新增「音色模型放哪」一节写了完整三步。
+- 索引文件仍从 RVC 的 `assets\indices` 找，不随这个设置变。
+
+### 验证
+
+- 中间层 0.9.0 `/model_info`：返回 `dir` / `backend_dir` / `count` / `models` /
+  `source` / `matches_backend` / `rvc_port` / `rvc_running`，本机实测 8 个 `.pth`；
+  传 `assets\indices` 时返回 mismatch 告警。
+- `_conf_schema.json` 57 → 58 项，`json.loads` 通过；`main.py` `py_compile` 通过。
+
 ## v0.10.1（2026-10-28）
 
 **清理设置页：只留真正生效的项**。按「schema 的 74 项逐项在 `main.py` 找读取点 →

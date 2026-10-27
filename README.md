@@ -4,7 +4,7 @@
 
 本项目的取歌与下载逻辑借用了 [astrbot_plugin_music](https://github.com/Zhalslar/astrbot_plugin_music) 的实现思路。
 
-- 版本：`0.10.1`
+- 版本：`0.11.0`
 - 作者：void-HaoNan
 - 仓库：<https://github.com/void-HaoNan/astrbot-plugin-chorus-cover>
 - 许可：AGPL-3.0（见文末「许可与出处」）
@@ -104,6 +104,7 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 |---|---|---|
 | `/convert` | 提交翻唱任务 | 必需 |
 | `/show_model` | 模型列表（`/刷新rvc模型` 用） | 必需 |
+| `/model_info` | 模型文件夹 + 列表（0.11.0 起优先用；后端没有就退回 `/show_model`） | 可选 |
 | `/cache_info` / `/clear_cache` | 缓存查看 / 清理 | 可选 |
 | `/show_msst_models` / `/select_msst_model` | 分离模型列表 / 切换 | 可选（没有就自动跳过） |
 
@@ -112,6 +113,33 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 本仓库配套的中间层是 `chorus-mw`：它自己拉起 RVC 整合包、切副歌、分离、移调、混音，插件只要给它一个音频路径。
 
 > 注意：哪些参数真正生效由后端决定。`chorus-mw` **0.8.0 起**会真的使用 `f0_method`、`index_rate`、`rms_mix_rate`、`protect`、`inst_volume_db`、`vocal_volume_db`（传进 RVC 推理和混音），日志里每次请求打一行 `params ...` 可核对；`filter_radius`、混响/延迟、UVR5、MSST 那几组虽然还在 `/convert` 形参里，但中间层不消费，0.10.1 已从设置页删除。
+
+## 音色模型放哪（0.11.0）
+
+音色模型就是 `.pth` 文件。默认位置：
+
+```
+<RVC 整合包>\assets\weights\*.pth
+```
+
+例如 `D:\PYMSS-RVC\RVC20260723Nvidia50x0\RVC20260718Nvidia50x0\assets\weights\`。
+
+**怎么确认现在用的是哪个目录**：发一次 `/刷新rvc模型`，结果最后会带上
+`📁 模型文件夹：<绝对路径>（N 个 .pth，来源：…）`。这行是中间层 `/model_info` 现查的，不是猜的。
+
+**想换成别的目录**，三步，缺一不可：
+
+1. 把 `.pth` 放到新目录（例如 `D:\models\rvc`）；
+2. 给中间层设环境变量 `CHORUS_WEIGHTS_DIR=D:\models\rvc`，重启中间层（启动日志会打
+   `音色模型目录=...`；中间层会把这个路径作为 RVC 的 `weight_root` 传给 RVC 进程，
+   RVC 才真的去那儿加载）；
+3. 在插件设置里把 `rvc_models_dir` 填成同一个路径，再发一次 `/刷新rvc模型` 核对。
+
+只改插件设置里的 `rvc_models_dir` **不会**让 RVC 换目录——RVC 只认它自己进程里的
+`weight_root`。填了但和中间层不一致时，插件会在结果里明确告警，不会静默用错模型。
+
+索引文件（`.index`）仍然从 RVC 的 `assets\indices` 找，跟着模型名模糊匹配，不随
+`rvc_models_dir` 变。
 
 ## 命令表
 
@@ -162,6 +190,7 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 |---|---|---|
 | `rvc_base_url` | `http://127.0.0.1:3333/` | RVC 后端（Gradio）地址，必须以 `/` 结尾 |
 | `enable_rvc` | `true` | 总开关；关掉后 `/rvc`、各工具、本地音频入口都会提示已关闭 |
+| `rvc_models_dir` | 空 | 音色模型（`.pth`）文件夹。留空 = 自动用中间层实际目录（默认 `<RVC>\assets\weights`）；填了会拿去和中间层核对，不一致时 `/刷新rvc模型` 会告警。换目录的正确做法见「音色模型放哪」 |
 | `rvc_models_keywords` | `[]` | 模型列表（`文件名\|\|\|别名`），由 `/刷新rvc模型` 自动写入 |
 | `rvc_default_model` | 空 | 下拉选默认音色；留空用模型列表第 1 个 |
 | `timeout` | `30` | 等用户选歌/选音色的超时（秒） |
