@@ -11,8 +11,9 @@
 | 上游基线版本 | **v2.13.0** |
 | 上游再上游 | <https://github.com/CCYellowStar2/astrbot_plugin_rvc_svc>（上游 README 注明基于该项目扩展） |
 | 本分支仓库 | <https://github.com/void-HaoNan/astrbot-plugin-chorus-cover> |
+| 配套中间层（必需，另一仓库） | <https://github.com/void-HaoNan/chorus-mw> |
 | 本分支维护者 | void-HaoNan |
-| 本分支版本 | v0.9.0 |
+| 本分支版本 | v0.11.1 |
 
 ## 许可证
 
@@ -38,6 +39,10 @@
 5. **v0.3.0（2026-10-27）**：删除洛雪（LX-Source）兜底与 `download_via_lx` / `build_lx_url`，只保留网易云官方接口 + cookie；QQ 音源下线，搜歌与取歌都只走网易云。
 6. **v0.7.0（2026-10-27）**：搜歌/取歌改为多音源路由（网易云 → 酷狗 → 酷我 → QQ 音乐，`source_order` 可配），复用点歌插件 `astrbot_plugin_music` 的平台实现与配置。
 7. **v0.9.0（2026-10-27）**：收窄为纯 RVC 插件——删除另外两套推理引擎的命令、工具、配置与代码分支；删除本分支新增过的 `api.py`（旧 QQ / 网易云直连接口，改写后已无人调用）。
+8. **v0.11.0（2026-10-28）**：新增 `rvc_models_dir` 设置项，`/刷新rvc模型` 与 `get_available_models` 回显真实音色模型目录（走中间层 `/model_info`）。
+9. **v0.11.1（2026-10-28）**：文档补齐配套中间层 [`chorus-mw`](https://github.com/void-HaoNan/chorus-mw) 的仓库地址与职责说明——它一直是独立仓库、独立进程，**没有**并入本插件。
+
+> 架构说明：本插件不包含任何分离 / 切副歌 / 变声 / 混音代码，这些都在 `chorus-mw` 里。插件与中间层靠 Gradio 4（sse）通信；RVC 整合包自带 WebUI 是 Gradio 3.14（ws），两者协议不兼容，所以中间层不可省略。
 
 
 本分支**不再跟随上游更新**。上游假如更新了同名功能，本分支不会自动合并。

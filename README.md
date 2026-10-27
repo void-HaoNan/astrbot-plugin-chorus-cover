@@ -4,9 +4,10 @@
 
 本项目的取歌与下载逻辑借用了 [astrbot_plugin_music](https://github.com/Zhalslar/astrbot_plugin_music) 的实现思路。
 
-- 版本：`0.11.0`
+- 版本：`0.11.1`
 - 作者：void-HaoNan
 - 仓库：<https://github.com/void-HaoNan/astrbot-plugin-chorus-cover>
+- **配套中间层（必需）**：[`chorus-mw`](https://github.com/void-HaoNan/chorus-mw) —— 本插件只负责找歌和发语音，切副歌、分离、移调、变声、混音都由它干；没有它插件连不上 `3333`，翻唱会直接失败
 - 许可：AGPL-3.0（见文末「许可与出处」）
 
 ---
@@ -98,6 +99,8 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 
 ## 后端准备
 
+**后端就是姊妹仓库 [`chorus-mw`](https://github.com/void-HaoNan/chorus-mw)**（不是随便一个 Gradio 服务）。先把它跑起来：`http://127.0.0.1:3333/`，然后本插件才能工作。装法和启动脚本都在那个仓库的 README 里。
+
 插件按 Gradio API 说话，默认端口 `3333`，需要后端提供：
 
 | 接口 | 用途 | 是否必需 |
@@ -110,7 +113,7 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 
 参数是**按名字探测**的：后端 `/convert` 里没有 `render_mode` 就整组不传，没有 MSST 参数就沿用后端配置，没有 0.8.0 新增的 `rms_mix_rate` / `protect` / `inst_volume_db` / `vocal_volume_db` 也不传，不会因为多传参数报错。
 
-本仓库配套的中间层是 `chorus-mw`：它自己拉起 RVC 整合包、切副歌、分离、移调、混音，插件只要给它一个音频路径。
+本仓库配套的中间层是 [`chorus-mw`](https://github.com/void-HaoNan/chorus-mw)：它自己拉起 RVC 整合包、切副歌、分离、移调、混音，插件只要给它一个音频路径。
 
 > 注意：哪些参数真正生效由后端决定。`chorus-mw` **0.8.0 起**会真的使用 `f0_method`、`index_rate`、`rms_mix_rate`、`protect`、`inst_volume_db`、`vocal_volume_db`（传进 RVC 推理和混音），日志里每次请求打一行 `params ...` 可核对；`filter_radius`、混响/延迟、UVR5、MSST 那几组虽然还在 `/convert` 形参里，但中间层不消费，0.10.1 已从设置页删除。
 

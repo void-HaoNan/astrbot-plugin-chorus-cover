@@ -91,7 +91,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.11.0",
+    "0.11.1",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
