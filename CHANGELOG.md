@@ -6,6 +6,20 @@
 0.9.0 之前的条目保留发布当时的原文；其中提到的引擎、命令与配置已在 0.9.0 移除，
 现在只剩 RVC 一条链路，以本文件最上方与 `README.md` 为准。
 
+## v0.11.4（2026-10-28）
+
+**补齐插件市场自动解析要读的字段。** AstrBot Cloud 现在会自动解析仓库里的
+`metadata.yaml`，我们之前只写了六个基础键，于是发布预览页上「AstrBot 版本要求 / 支持平台 /
+标签」三行全是横杠。
+
+### 变更（只动 metadata.yaml）
+
+- 新增 `astrbot_version: ">=4.16,<5"`（本机实测 AstrBot 4.29.3）。
+- 新增 `tags`：音乐、RVC、翻唱、语音合成。
+- 新增 `support_platforms`：`aiocqhttp`（QQ 个人号，走 OneBot v11）与 `qq_official`
+  （插件里有 `qq_callbacks.py` 与 `qq_official_cards/buttons` 配置，官方机器人也走得通）。
+- 版本号 0.11.3 → 0.11.4（`main.py` / `metadata.yaml` 同步）。
+
 ## v0.11.3（2026-10-28）
 
 **上架插件市场前的准备。** 插件本身功能不变，只改了对外的描述和版本号。
