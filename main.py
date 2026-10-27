@@ -3269,6 +3269,9 @@ class MusicPlugin(Star):
     async def rvc_cover(self, event: AstrMessageEvent, song_name: str, artist_name: Optional[str] = None, model_index: int = 1, model_name: Optional[str] = None, key_shift: int = 0, music_source: Optional[str] = None) -> str:
         '''使用RVC模型翻唱歌曲。
 
+        **只在用户明确要「唱 / 翻唱 / 变声」时调用。用户说「点歌」「放首歌」「听」是想放原曲，
+        不要用本工具。**
+
         Args:
             song_name(string): 要翻唱的歌曲名称
             artist_name(string, optional): 歌手名称（如果有指定版本/歌手，请务必填入此参数，如'雨宫天'）
@@ -3790,6 +3793,12 @@ class MusicPlugin(Star):
         '''智能一键翻唱工具 - 自动完成搜索+选择+翻唱全流程！
 
         这是最高效的翻唱方式，只需提供歌曲名即可自动完成所有步骤。
+
+        **什么时候才用这个工具（务必先判断）：**
+            - 只在用户明确表达「要唱 / 唱一首 / 翻唱 / 变声 / 用某个音色唱」这类意思时才调用。
+            - 用户说「点歌」「放首歌」「来一首」「听」这类是想放**原曲**，那是点歌插件的活儿，
+              **绝对不要调用本工具**，否则会把听歌变成翻唱。
+            - 拿不准是「听原曲」还是「翻唱」时，先问一句「你要原曲还是唱一遍？」再决定。
         
         Args:
             song_name(string): 要翻唱的歌曲名称（必填）
