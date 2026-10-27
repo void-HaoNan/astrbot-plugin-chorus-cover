@@ -42,7 +42,7 @@
 - **批量翻唱**：一次多首，逐首发送 + 最后给汇总报告。
 - **任务与统计**：`/查看翻唱任务`、`/取消翻唱任务`、`/我的翻唱统计`；LLM 侧有 `get_task_status` / `cancel_cover_task` / `view_my_stats`。
 - **自动升降调**（可选）：识别原曲歌手与模型的性别，男→女升调、女→男降调，人声与伴奏一起移调。
-- **统一出口**：进度、重试提示默认静音；失败只发一句人话，技术细节只写日志。
+- **统一出口**：`outbound.py` 负责插件自己那几条提示——进度、重试默认静音，失败只发一句人话，技术细节只写日志。后端推理进度是另一套，由 `enable_progress_bar` 单独控制。
 - **缓存管理**：`/查看翻唱缓存`、`/清理翻唱缓存`（管理员）。
 - **点歌 / 翻唱分开判定**：所有翻唱入口先过 `intent_gate.py` 的统一闸门，点歌类消息不会被翻唱接走。
 
@@ -214,7 +214,7 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 |---|---|---|
 | `notify_progress` | `false` | 发进度提示到群里（默认静音） |
 | `notify_retry` | `false` | 发重试提示到群里（默认静音） |
-| `enable_progress_bar` | `true` | 把后端进度渲染成轻提示（受 `notify_progress` 控制） |
+| `enable_progress_bar` | `true` | 把后端推理进度（带阶段图标的那几条）直接发到群里；关掉就只剩起止消息。与 `notify_progress` 是两套：后者管插件自己「正在取歌 / 已提交」那几条 |
 | `progress_update_interval` | `3` | 进度刷新最小间隔（秒） |
 | `enable_config_report` | `true` | 完成后回一条「本次配置」 |
 | `enable_send_file` | `false` | 除了音频再以文件形式发一份 |
