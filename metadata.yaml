@@ -1,6 +1,6 @@
-﻿name: astrbot_plugin_chorus_cover
+name: astrbot_plugin_chorus_cover
 display_name: RVC 副歌翻唱
-desc: RVC 音色翻唱插件：多音源取歌（网易云→酷狗→酷我→QQ音乐，顺序可配）、副歌/整首/自定义时长，对话出口交给人格模型
-version: 0.11.2
+desc: 说一句「翻唱《歌名》」就自动取歌、切副歌、RVC 变声、混音发回群聊；需自备 RVC 整合包与 chorus-mw 中间层
+version: 0.11.3
 author: void-HaoNan
 repo: "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover"
