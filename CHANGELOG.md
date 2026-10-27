@@ -6,6 +6,39 @@
 0.9.0 之前的条目保留发布当时的原文；其中提到的引擎、命令与配置已在 0.9.0 移除，
 现在只剩 RVC 一条链路，以本文件最上方与 `README.md` 为准。
 
+## v0.12.1（2026-10-28）
+
+**按插件市场审核意见修的两处合规问题。** 审核结论是「未发现恶意代码，但需修改后再上架」。
+
+### 1. 日志：必须且只能 `from astrbot.api import logger`
+
+- `outbound.py`：删掉 `import logging` 与 `logging.getLogger(__name__)`，改成
+  `from astrbot.api import logger`（这个模块以前是唯一一处无条件自建 logger 的）。
+- `netease_fetch.py`、`source_router.py`：删掉 `try/except` 里「脱离 AstrBot 就退回标准
+  logging」的回退分支，统一 `from astrbot.api import logger`；`netease_fetch.py` 里
+  随之无用的 `import logging` 也删了。
+- 现在全仓库只剩 `from astrbot.api import logger` 这一种写法（`main.py` / `outbound.py` /
+  `netease_fetch.py` / `source_router.py` / `selection.py` / `qq_callbacks.py`）。
+
+### 2. 数据持久化：统一放到 `data/plugin_data/<插件名>/`
+
+- 用户偏好：默认从 `data/user_preferences.json` 改为
+  `data/plugin_data/astrbot_plugin_chorus_cover/user_preferences.json`。
+  老配置里还是旧默认值的会被自动改写；如果旧文件存在而新位置没有，启动时**复制一份**过去
+  （`shutil.copy2`），不删原文件，日志会记一行迁移记录。
+- 临时音频：5 处 `os.path.join(os.path.dirname(__file__), "temp_audio")` 全部改成
+  新的 `_temp_audio_dir()`，即 `data/plugin_data/astrbot_plugin_chorus_cover/temp_audio`；
+  24 小时清理逻辑与 `_is_temp_audio()` 判断跟着一起走这个新目录。
+- `_conf_schema.json` 的 `preference_storage_path` 默认值改为空字符串（空 = 用插件数据目录），
+  hint 说明新默认路径和自动迁移。
+- 新增模块级 `PLUGIN_NAME` 与 `_plugin_data_dir()`，用 AstrBot 的
+  `get_astrbot_plugin_data_path()` 定位，脱离 AstrBot 跑单测时回退到 `./data/plugin_data`。
+- 全仓库已无向插件代码目录写文件的代码（`os.path.dirname(__file__)` 的写操作 0 处）。
+
+### 版本
+
+- 0.12.0 → 0.12.1（`main.py` / `metadata.yaml` 同步）。
+
 ## v0.12.0（2026-10-28）
 
 **模型目录从「读说明」变成「一条命令打开」。** 之前 `rvc_models_dir` 的提示写了四段、

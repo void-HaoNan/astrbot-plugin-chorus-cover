@@ -26,6 +26,33 @@ from . import netease_fetch
 from . import source_router
 from .selection import CoverSelectionUI
 from .outbound import Outbound
+
+#: 插件名（AstrBot 的数据目录按这个名字分：data/plugin_data/<plugin_name>）
+PLUGIN_NAME = "astrbot_plugin_chorus_cover"
+
+
+def _plugin_data_dir() -> str:
+    """插件自己的持久化目录：``<AstrBot data>/plugin_data/astrbot_plugin_chorus_cover``。
+
+    审核要求：用户数据不能放在 ``data/`` 根目录（会跟 AstrBot 自己的文件混在一起，
+    迁移和审计都分不清），也不能写在插件代码目录（升级会被覆盖）。
+    """
+    try:
+        from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
+
+        base = get_astrbot_plugin_data_path()
+    except Exception:  # 兜底：脱离 AstrBot 跑单测时用相对路径
+        base = os.path.join(os.getcwd(), "data", "plugin_data")
+    path = os.path.join(base, PLUGIN_NAME)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _temp_audio_dir() -> str:
+    """临时音频目录：``<plugin_data>/temp_audio``（24 小时后自动清理）。"""
+    path = os.path.join(_plugin_data_dir(), "temp_audio")
+    os.makedirs(path, exist_ok=True)
+    return path
 from .intent_gate import cover_refusal, is_music_request, message_text as event_message_text
 
 MODEL_ALIAS_SEPARATOR = "|||"
@@ -91,7 +118,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.12.0",
+    "0.12.1",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -241,7 +268,22 @@ class MusicPlugin(Star):
         self.msst_default_model = MSST_DEFAULT_MODEL
         
         self.max_batch_size = config.get("max_batch_size", 5)
-        self.preference_storage_path = config.get("preference_storage_path", "data/user_preferences.json")
+        # 0.12.1：偏好文件默认放 data/plugin_data/<插件名>/，不再写 data/ 根目录。
+        # 老配置里若还是旧默认值 "data/user_preferences.json"，自动迁到新位置。
+        default_pref = os.path.join(_plugin_data_dir(), "user_preferences.json")
+        configured_pref = str(config.get("preference_storage_path", "") or "").strip()
+        legacy_pref = os.path.join("data", "user_preferences.json")
+        if not configured_pref or configured_pref.replace("\\", "/") == legacy_pref.replace("\\", "/"):
+            self.preference_storage_path = default_pref
+            legacy_abs = os.path.join(os.getcwd(), "data", "user_preferences.json")
+            if not os.path.exists(default_pref) and os.path.exists(legacy_abs):
+                try:
+                    shutil.copy2(legacy_abs, default_pref)
+                    logger.info(f"用户偏好已从旧位置迁移到 {default_pref}")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(f"迁移旧偏好文件失败（继续用新路径）: {exc}")
+        else:
+            self.preference_storage_path = configured_pref
 
         self.enable_auto_key_shift = config.get("enable_auto_key_shift", False)
         self.enable_auto_key_shift_debug = config.get("enable_auto_key_shift_debug", False)
@@ -520,7 +562,7 @@ class MusicPlugin(Star):
     def _cleanup_old_temp_files(self):
         """清理超过24小时的旧临时文件"""
         try:
-            temp_dir = os.path.join(os.path.dirname(__file__), "temp_audio")
+            temp_dir = _temp_audio_dir()
             if not os.path.isdir(temp_dir):
                 return
             now = time.time()
@@ -656,7 +698,7 @@ class MusicPlugin(Star):
             for key, (path, ts) in list(self._recent_audio_cache.items()):
                 if now - ts > self._recent_audio_cache_ttl:
                     expired.append(key)
-                    temp_dir = os.path.join(os.path.dirname(__file__), "temp_audio")
+                    temp_dir = _temp_audio_dir()
                     if path.startswith(temp_dir) and os.path.isfile(path):
                         try:
                             os.remove(path)
@@ -771,7 +813,7 @@ class MusicPlugin(Star):
         """下载音频文件到临时目录"""
         try:
             import aiohttp
-            temp_dir = os.path.join(os.path.dirname(__file__), "temp_audio")
+            temp_dir = _temp_audio_dir()
             os.makedirs(temp_dir, exist_ok=True)
             dest = os.path.join(temp_dir, f"dl_{uuid.uuid4().hex[:8]}{suffix}")
             
@@ -815,7 +857,7 @@ class MusicPlugin(Star):
 
     def _netease_temp_dir(self) -> str:
         """插件自己的临时音频目录（与本地音频下载共用，退出时会清理）。"""
-        temp_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "temp_audio")
+        temp_dir = _temp_audio_dir()
         os.makedirs(temp_dir, exist_ok=True)
         return temp_dir
 
@@ -2667,7 +2709,7 @@ class MusicPlugin(Star):
             await self._notify_llm_with_context(event, song_display_name, "failed", result_detail=str(e))
         finally:
             self._finish_active_task(event)
-            temp_dir = os.path.join(os.path.dirname(__file__), "temp_audio")
+            temp_dir = _temp_audio_dir()
             if audio_path.startswith(temp_dir) and os.path.isfile(audio_path):
                 try:
                     os.remove(audio_path)

@@ -20,11 +20,10 @@
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import Any, Dict, Optional
 
-logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 #: 支持的出口类型
 VALID_KINDS = ("start", "progress", "retry", "failed", "done", "alert")

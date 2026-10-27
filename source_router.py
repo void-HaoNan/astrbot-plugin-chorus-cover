@@ -72,12 +72,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-try:  # AstrBot 里用它的 logger；单独跑脚本时退化成标准 logging
-    from astrbot.api import logger
-except Exception:  # pragma: no cover - 仅用于脱离 AstrBot 的本地验证
-    import logging
-
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 from . import netease_fetch
 

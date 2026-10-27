@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
 import os
 import shutil
 import subprocess
@@ -44,10 +43,7 @@ from typing import Any, Optional, Tuple
 
 import aiohttp
 
-try:  # AstrBot 里用它的 logger；单独跑脚本时退化成标准 logging
-    from astrbot.api import logger
-except Exception:  # pragma: no cover - 仅用于脱离 AstrBot 的本地验证
-    logger = logging.getLogger(__name__)
+from astrbot.api import logger
 
 
 # ---------------------------------------------------------------------------

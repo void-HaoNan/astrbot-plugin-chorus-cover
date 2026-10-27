@@ -171,8 +171,8 @@
   "preference_storage_path": {
     "description": "偏好数据存储路径",
     "type": "string",
-    "hint": "用户偏好数据的存储文件路径（JSON格式）",
-    "default": "data/user_preferences.json"
+    "hint": "留空 = data/plugin_data/astrbot_plugin_chorus_cover/user_preferences.json（推荐，跟其它插件的数据放一起，AstrBot 迁移/备份时不会漏）。填了就用填的路径；旧版默认的 data/user_preferences.json 会自动迁移过来。",
+    "default": ""
   },
   "enable_llm_success_notify": {
     "description": "处理完成后通知大语言模型 (LLM)",
