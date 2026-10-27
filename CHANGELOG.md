@@ -3,6 +3,34 @@
 本文件记录 **astrbot_plugin_chorus_cover**（副歌翻唱 · 自维护分支）的变更。
 上游 `sdfsfsk/matsuko_cover` 的历史日志请见上游仓库，此处只记本分支的差异。
 
+## v0.6.0（2026-10-27）
+
+新增「唱多长」配置：副歌片段 / 整首翻唱 / 自定义时长。后端 `chorus-mw` 同步升到 0.7.0，
+默认链路从「整首分离再切」改成「先切 60 秒再分离」，同一首 4:39 的歌实测 72.2 秒 → 32.6 秒。
+
+### 新增
+
+- **`render_mode`**：`chorus`（默认，只翻副歌片段，45 秒）/ `full`（整首翻唱）/
+  `custom`（自定义时长，用 `chorus_seconds`）。插件按名字探测后端 `/convert` 是否支持
+  `render_mode`，老后端没有这个参数就整组不传、仍按副歌模式处理，不会报 invalid keyword。
+- **`chorus_seconds`**：20~180 秒，默认 45；`custom` 模式按它定长，`chorus` 模式也用它当片段长度。
+- **完整翻唱更慢**：`full` 要分离整首、变声整首，耗时可能是副歌模式的 5~10 倍，显存占用更高。
+  4:39 的歌整首跑通常要几分钟以上，默认 `inference_timeout=300` 很可能不够；
+  要整首翻唱请把 `inference_timeout` 和 `task_timeout_seconds` 一起调大。
+
+### 说明
+
+- 时长参数只对 RVC 后端（`chorus-mw` 0.7.0+）生效；SVC / SoulX-SVCVC 后端没有这组参数，
+  插件自动跳过，行为不变。
+- 中间层侧改动见 `chorus-mw` 的 CHANGELOG 0.7.0：先切后分离、常驻 worker、去混响与伴奏处理并行。
+
+### 验证
+
+- `py_compile` 通过：`main.py`。
+- 实测同一首 4:39 的 mp3：`chorus` 端到端 34.1 秒（成品 45.0 秒 wav），
+  `custom=30` 端到端 27.9 秒（成品 30.8 秒 wav），`full` 用 100 秒素材 52.7 秒跑通。
+- 未重启 AstrBot（由用户重启）。
+
 ## v0.5.0（2026-10-27）
 
 取歌/下载实现整套换成点歌插件 `astrbot_plugin_music` 那套，删掉自己写的那套和几条说明性日志横幅。

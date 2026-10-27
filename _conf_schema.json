@@ -529,6 +529,22 @@
     "hint": "默认关闭以保留 RVC/SVC 原始音质。开启后才应用 80Hz 高通、16kHz 低通、EQ、压缩、延迟和混响；混响与延迟强度仍由原配置控制。仅对更新后的 RVCSVC-API-amd/MSST 生效。",
     "default": false
   },
+  "render_mode": {
+    "description": "翻唱时长模式（唱多长）",
+    "type": "string",
+    "hint": "chorus＝只翻唱副歌片段（默认，45 秒，最快）；custom＝自定义时长，用下面的 chorus_seconds（20~180 秒），同样是先切出来再分离；full＝整首翻唱（分离整首、变声整首）。注意：完整翻唱耗时明显更长，可能是副歌模式的 5~10 倍，显存占用也更高，长歌容易超出 inference_timeout。需要后端 chorus-mw 0.7.0 及以上支持；老后端会忽略此项、仍按副歌模式处理。",
+    "options": ["chorus", "full", "custom"],
+    "labels": ["副歌片段（默认，最快）", "整首翻唱（很慢，显存占用高）", "自定义时长"],
+    "default": "chorus"
+  },
+  "chorus_seconds": {
+    "description": "翻唱时长（秒）",
+    "type": "int",
+    "hint": "render_mode=custom 时生效，也是 chorus 模式的片段长度：范围 20~180，默认 45。中间层实际会先切「这个时长 + 15 秒」去做分离，再在里面精挑最终这一段。整首翻唱（full）不受此项影响。",
+    "default": 45,
+    "minimum": 20,
+    "maximum": 180
+  },
   "enable_inject_context": {
     "description": "将翻唱任务状态注入LLM上下文记忆",
     "type": "bool",

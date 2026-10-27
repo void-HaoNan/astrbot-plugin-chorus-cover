@@ -65,7 +65,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱（自维护分支，基于 matsuko_cover 2.13.0，AGPL-3.0）：对话出口统一走模型、失败结果结构化",
-    "0.5.0",
+    "0.6.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -197,6 +197,19 @@ class MusicPlugin(Star):
         self.delay_intensity = config.get("delay_intensity", 0)
         self.shift_accompaniment = config.get("shift_accompaniment", True)
         self.vocal_postprocess = bool(config.get("vocal_postprocess", False))
+
+        # === 0.6.0 翻唱时长（只对 chorus-mw 这类支持 render_mode 的后端生效）===
+        raw_render_mode = str(config.get("render_mode", "chorus") or "chorus").strip().lower()
+        if raw_render_mode not in ("chorus", "full", "custom"):
+            logger.warning(f"render_mode={raw_render_mode} 不认识，按 chorus（副歌片段）处理")
+            raw_render_mode = "chorus"
+        self.render_mode = raw_render_mode
+        try:
+            seconds = int(round(float(config.get("chorus_seconds", 45))))
+        except (TypeError, ValueError):
+            logger.warning("chorus_seconds 配置格式错误，使用默认值 45")
+            seconds = 45
+        self.chorus_seconds = max(20, min(180, seconds))
 
         # === SoulX-Singer SVC Voice Conversion 参数 ===
         self.svcvc_prompt_vocal_sep = bool(config.get("svcvc_prompt_vocal_sep", False))
@@ -1530,6 +1543,7 @@ class MusicPlugin(Star):
 
             legacy_key_shift = self._effective_key_shift(api_type, key_shift)
             msst_kwargs = await self._get_optional_msst_kwargs(client, base_url)
+            render_kwargs = self._get_render_kwargs(client) if api_type == "rvc" else {}
             legacy_kwargs = {
                 "song_name_src": song_name_src,
                 "key_shift": legacy_key_shift,
@@ -1549,6 +1563,7 @@ class MusicPlugin(Star):
                 "vocal_postprocess": self.vocal_postprocess,
                 "shift_accompaniment": self.shift_accompaniment,
                 **msst_kwargs,
+                **render_kwargs,
             }
             if api_type == "svc":
                 legacy_kwargs["svc_f0_method"] = self.svc_f0_method
@@ -2308,6 +2323,26 @@ class MusicPlugin(Star):
                 if isinstance(item, dict) and item.get("parameter_name")
             }
         return None
+
+    def _get_render_kwargs(self, client) -> Dict[str, Any]:
+        """把「唱多长」的模式传给支持它的后端（chorus-mw 0.7.0 起）。
+
+        老后端没有 render_mode 这个参数，按名字探测一下：缺了就整组不传，
+        由后端按默认「副歌 45 秒」处理，不会因为多传参数报 invalid keyword。
+        """
+        parameter_names = self._client_api_parameter_names(client, "/convert")
+        if not parameter_names or "render_mode" not in parameter_names:
+            if self.render_mode != "chorus" and not getattr(self, "_render_mode_warned", False):
+                self._render_mode_warned = True
+                logger.warning(
+                    f"当前 RVC 中间层不支持 render_mode，{self.render_mode} 未生效"
+                    "（按副歌模式处理）；把 chorus-mw 升级到 0.7.0 并重启 3333 后可用"
+                )
+            return {}
+        values = {"render_mode": self.render_mode}
+        if "chorus_seconds" in parameter_names:
+            values["chorus_seconds"] = self.chorus_seconds
+        return values
 
     def _get_svcvc_msst_kwargs(self, client) -> Dict[str, Any]:
         """Send request-level MSST settings only to a compatible SVCVC backend."""
