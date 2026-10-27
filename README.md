@@ -1,26 +1,28 @@
 # astrbot_plugin_chorus_cover（副歌翻唱 · 自维护分支）
 
-## 前置服务（v0.5.0 起取歌不再必需本地服务）
+## 取歌方式
 
-取歌实现照搬点歌插件 `astrbot_plugin_music`：默认走 meting 公开接口拿直链，**不需要 cookie、也不需要本地服务**。本地 NeteaseCloudMusicApi 服务只在需要下会员歌时当备用路：
+取歌/下载实现与点歌插件 `astrbot_plugin_music` 一致：
 
-- 启动（可选）：`powershell -ExecutionPolicy Bypass -File D:\PYMSS-RVC\netease-api\start.ps1`
-- 起来后把 `netease_api_base` 指到它的实际端口（本机 3000/3001 被 SnowLuma 占用，服务实际监听 **3003**）
-- 服务没起、或 `netease_api_base` 留空都不影响正常取歌，只是会员歌只能拿到试听（会被 80 秒闸门拦下）
+- **主路**：meting 公开接口拿直链，不需要 cookie，也不需要本地服务。
+- **备用路**：本地 NeteaseCloudMusicApi 服务，会员歌靠它 + `netease_cookie` 拿整首。
+  - 启动（可选）：`powershell -ExecutionPolicy Bypass -File D:\PYMSS-RVC\netease-api\start.ps1`
+  - 把 `netease_api_base` 指到它实际监听的端口（本机 3000/3001 被 SnowLuma 占用，服务实际在 **3003**）
+- 两条路都过同一条 80 秒时长闸门，拿不到整首按失败处理。
 
 ## 这是自维护分支
 
 - **来源**：本仓库是 [sdfsfsk/matsuko_cover](https://github.com/sdfsfsk/matsuko_cover)（`astrbot_plugin_matsuko_cover`）**v2.13.0** 的自维护分支，维护者 void-HaoNan，仓库地址 <https://github.com/void-HaoNan/astrbot-plugin-chorus-cover>。
 - **许可证**：与上游一致，**GNU AGPL-3.0**；`LICENSE` 保持上游原样未改。上游版权归原作者所有，修改声明见 [NOTICE.md](NOTICE.md)，变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 - **与上游 v2.13.0 的差异**：
-  1. 新增统一对话出口 `outbound.py`：进度提示、风控重试提示、报错详情三类文本不再硬编码直发，统一交给人格模型说一句人话。
-  2. 进度提示与重试提示**默认静音**（`notify_progress` / `notify_retry` 缺省 `false`），一次翻唱不再连发三条机器味提示。
-  3. 失败**只发一句话**：重试次数、错误码、后端返回等技术细节只写日志，不再整段甩给用户。
-  4. 失败判断改为明确标记（`❌` / `FAIL:` 开头），不再用"失败""错误""超时"等关键词猜，避免正常文案被误判。
+  1. 统一对话出口 `outbound.py`：进度提示、风控重试提示、报错详情三类文本统一交给人格模型说一句人话。
+  2. 进度提示与重试提示**默认静音**（`notify_progress` / `notify_retry` 缺省 `false`）。
+  3. 失败**只发一句话**：重试次数、错误码、后端返回等技术细节只写日志。
+  4. 失败判断使用明确标记（`❌` / `FAIL:` 开头）。
   5. 修复 QQ 音乐 mid 解析（新版返回结构里 mid 已是字符串导致的 `'str' object has no attribute 'mid'`）。
-  6. 移除已失效的备选音源接口（2026-10-27 实测域名解析失败），不再每次重试白等网络超时。
-  7. **0.3.0 起彻底移除洛雪（LX-Source）兜底**：只保留网易云，**QQ 音源同步下线**，搜歌与取歌都只走网易云，取不到整首直接失败。
-  8. **0.5.0 起取歌/下载实现整套照搬点歌插件 `astrbot_plugin_music`**（meting 直链 → 下载 → 落盘命名/失败清理同一套），删掉原先自己写的「官方接口 + 外链」实现，同时删掉启动时那几条「某某已下线 / 首选某某」的说明性日志横幅。
+  6. 备选音源接口使用当前已失效者之外的可用实现。
+  7. 音源只有网易云：搜歌与取歌都走网易云，取不到整首直接失败。
+  8. 取歌/下载实现与点歌插件 `astrbot_plugin_music` 一致（meting 直链 → 下载 → 落盘命名/失败清理同一套）。
 - **维护方式**：**本分支不再跟随上游更新**，只按自己需要打补丁；上游的新功能不会自动合并进来。想要上游版本请直接使用上游仓库。
 
 ---
@@ -224,7 +226,7 @@ SoulX-SVCVC 使用参考音频进行零样本音色转换，不需要训练 `.pt
 | `rvc_default_model` | 空 | 下拉选择默认 RVC 音色模型（8 个固定选项）；留空则沿用 `default_model_index` 序号 |
 | `enable_svc` | `true` | 启用 SVC-Fusion |
 | `enable_svcvc` | `false` | 启用 SoulX-SVCVC |
-| `enable_qqmusic` | `false` | 已下线，保留只为兼容旧配置 |
+| `enable_qqmusic` | `false` | 保留只为兼容旧配置 |
 | `disable_netease` | `false` | 已无效（只剩网易云一条路，开启也按网易云继续） |
 | `disable_qqmusic` | `true` | 已锁死只用网易云 |
 | `netease_cookie` | 空 | 网易云 `MUSIC_U` 值；主路（meting）不吃 cookie，会员歌要靠备用服务带上它；只存本机 |
@@ -272,7 +274,7 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 
 下载完统一用 `ffprobe` 量真实时长，不足 80000ms 的删文件判失败（原因写"下载到的不是整首（时长 xx 秒）"）；量不到时长也按失败处理。点歌插件没有这道闸门（它只把试听写进卡片备注），这里保留，绝不把试听片段交给中间层。
 
-**统一取歌顺序**（卡片选歌、命令点歌、LLM 工具、批量翻唱全部共用 `_prepare_song_audio`，任何入口都不会再把 id / mid 原样交给中间层）：本地文件直通 → 纯数字按网易云 id（主路 meting → 备用路 NodeJS）→ 11~14 位字母数字的旧 QQ mid（不再碰任何 QQ 音源，直接按歌名去网易云搜，搜不到就失败）→ 其它当歌名（先搜网易云拿数字 id，再回上一步）；每一步下完都过 80 秒闸门，失败原因串成一句中文。
+**统一取歌顺序**（卡片选歌、命令点歌、LLM 工具、批量翻唱全部共用 `_prepare_song_audio`，任何入口都只把本地音频交给中间层）：本地文件直通 → 纯数字按网易云 id（主路 meting → 备用路 NodeJS）→ 11~14 位字母数字的旧 QQ mid（不再碰任何 QQ 音源，直接按歌名去网易云搜，搜不到就失败）→ 其它当歌名（先搜网易云拿数字 id，再回上一步）；每一步下完都过 80 秒闸门，失败原因串成一句中文。
 
 **cookie 失效提醒**：连续 3 次取歌都因为"只给试听 / HTTP 401 / code 不对"失败时，私聊 AstrBot 全局配置里的 `admins_id` 提醒更新 cookie；找不到管理员就发回触发点歌的会话。同一失效状态按 `cookie_alert_interval_hours` 去重，取歌成功后状态清空。
 
@@ -318,7 +320,7 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 | `/rvc <歌名> [升降调]` | RVC + 网易云点歌 |
 | `/svc <歌名> [升降调]` | SVC-Fusion + 网易云点歌 |
 | `/svcvc <歌名> [升降调]` | SoulX-SVCVC + 网易云点歌 |
-| `/qqrvc` 等 QQ 入口 | 已于 0.3.0 下线（QQ 音源下线），不再提供 |
+| `/qqrvc` 等 QQ 入口 | 当前版本不提供 |
 | `/本地翻唱` | 使用最近上传/缓存的本地音频 |
 
 ### 任务
@@ -392,7 +394,7 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 
 ### QQ 音乐的入口和配置怎么没了
 
-0.3.0 起 QQ 音源已下线：`/qqrvc` 等命令不再提供，`enable_qqmusic`、`disable_qqmusic`、`third_party_api_key` 等配置保留只为兼容旧配置，不再影响取歌。所有点歌一律走网易云。
+QQ 入口说明：`/qqrvc` 等命令不再提供，`enable_qqmusic`、`disable_qqmusic`、`third_party_api_key` 等配置保留只为兼容旧配置，不再影响取歌。所有点歌一律走网易云。
 
 ### 网易云提示“拿不到整首歌”
 
