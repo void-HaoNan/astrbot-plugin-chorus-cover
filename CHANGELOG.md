@@ -3,6 +3,47 @@
 本文件记录 **astrbot_plugin_chorus_cover**（副歌翻唱 · 自维护分支）的变更。
 上游 `sdfsfsk/matsuko_cover` 的历史日志请见上游仓库，此处只记本分支的差异。
 
+## v0.5.0（2026-10-27）
+
+取歌/下载实现整套换成点歌插件 `astrbot_plugin_music` 那套，删掉自己写的那套和几条说明性日志横幅。
+
+### 变更
+
+- **新增 `netease_fetch.py`**：照搬点歌插件的取歌链路——搜歌 `POST http://music.163.com/api/search/get/web`
+  （`s` / `limit` / `type=1` / `offset=0`，带 `appver=2.0.2`）、主路直链
+  `GET https://api.qijieya.cn/meting/?type=song&id=<id>`、备用直链 NodeJS API
+  （先 `/song/url/v1?level=…` 再 `/song/url`，可带 `MUSIC_U`）。
+  落盘同样照搬：`temp_audio/` + `uuid4().hex` 命名、按 URL 后缀白名单、1024 字节分片、
+  HTTP 非 200 / 返回错误页 / 超 60MB / 内容不全一律删半截文件。
+  点歌插件里发卡片、发语音/文件、歌词与评论渲染、封面卡片等逻辑没有搬。
+- **删除 `netease.py`**：原先自己写的「官方接口判定 + 外链兜底」实现（含 `download_by_id`
+  / `download_by_api_service`）整体移除，改由 `netease_fetch.NeteaseFetcher` 承担。
+- `_fetch_netease_audio` 改为直接 `await` 取歌器（不再 `asyncio.to_thread`），并保留
+  cookie 失效连续计数与管理员提醒。
+- `_search_netease_songs` 先用点歌插件那套搜索，失败/无结果再退回插件原来的搜索器。
+- `_prepare_song_audio` 对外契约不变：`(本地文件路径 | None, 失败原因, 是否试听)`；
+  **80 秒 `ffprobe` 闸门保留**，量不到时长照样判失败。
+- 删除说明性日志横幅：`QQ 音源已下线：搜歌与取歌只走网易云官方接口`、
+  `网易云取歌首选本地服务: …`、`没配置 netease_api_base，网易云取歌只走官方接口 + 外链方式`、
+  `音乐源 xxx 已下线（QQ 音源下线），按网易云处理/搜索`；`default_api` 那条警告改成只说事实。
+  正常 `[取歌] …` 日志与错误日志全部保留。
+
+### 配置
+
+- 新增 `netease_meting_base`（默认 `https://api.qijieya.cn/meting/`）：取直链主路，不需要密钥。
+- 新增 `netease_api_token`：备用 NodeJS 服务需要鉴权时填写（`Authorization: Bearer …`）。
+- `netease_api_base` 默认值改为点歌插件用的 `https://zm.wwoyun.cn`（线上仍是本机 `3003`，不受影响）。
+- `netease_cookie`、`netease_quality` 等原有配置项名称与作用保持不变；`netease_cookie` 的说明
+  改成"备用路用"，因为主路 meting 不吃 cookie。
+
+### 验证
+
+- `py_compile` 通过：`main.py`、`netease_fetch.py`。
+- 真实下载「失眠飞行」（网易云 id `1365898499`）：走主路 meting，文件 8,289,219 字节，
+  `ffprobe` 时长 **207.157 秒**；按歌名搜索也能命中同一 id 并下到同一首歌。
+- 不存在的 id（`999999999`）两条路都返回"没拿到链接"，不落垃圾文件。
+- 未重启 AstrBot（由用户重启）。
+
 ## v0.4.3（2026-10-27）
 
 新增「点歌 / 翻唱」需求判定闸门，翻唱插件不再接点歌的活。

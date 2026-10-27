@@ -23,7 +23,7 @@ from astrbot.api import logger
 from functools import partial
 from gradio_client import Client
 
-from . import netease
+from . import netease_fetch
 from .selection import CoverSelectionUI
 from .outbound import Outbound
 from .intent_gate import cover_refusal, is_music_request, message_text as event_message_text
@@ -65,7 +65,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱（自维护分支，基于 matsuko_cover 2.13.0，AGPL-3.0）：对话出口统一走模型、失败结果结构化",
-    "0.4.3",
+    "0.5.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -86,7 +86,6 @@ class MusicPlugin(Star):
         self.enable_qqmusic = bool(config.get("enable_qqmusic", False))
         self.disable_netease = bool(config.get("disable_netease", False))
         self.disable_qqmusic = True
-        logger.info("QQ 音源已下线：搜歌与取歌只走网易云官方接口")
         if self.disable_netease:
             logger.warning("disable_netease 已开启，但 0.3.0 只有网易云这一条路，按网易云继续")
         self.timeout = config.get("timeout", 60)
@@ -108,7 +107,7 @@ class MusicPlugin(Star):
         self.llm_tool_timeout = config.get("llm_tool_timeout", 10)
         self.music_api_timeout = max(5, int(config.get("music_api_timeout", 20)))
 
-        # === 网易云官方接口取整首（0.3.0 起只有这一条路）===
+        # === 网易云取歌（0.5.0：照搬点歌插件 astrbot_plugin_music）===
         self.netease_cookie = str(config.get("netease_cookie", "") or "").strip()
         try:
             quality = int(str(config.get("netease_quality", 320) or 320).strip() or 320)
@@ -119,15 +118,24 @@ class MusicPlugin(Star):
             logger.warning(f"netease_quality={quality} 不在 128/192/320 之内，已按 320 处理")
             quality = 320
         self.netease_quality = quality
-        # 0.4.0：本地 NeteaseCloudMusicApi 服务地址（首选取歌路径，留空则只用外链方式）
+        # 取直链的两条路都来自点歌插件的平台配置：meting（netEase 平台）+ NodeJS 服务（netease_api 平台）
+        raw_meting_base = str(config.get("netease_meting_base", "") or "").strip()
+        self.netease_meting_base = (
+            netease_fetch.normalize_meting_base(raw_meting_base)
+            if raw_meting_base
+            else netease_fetch.DEFAULT_METING_BASE
+        )
         raw_api_base = str(config.get("netease_api_base", "") or "").strip()
-        self.netease_api_base = netease.normalize_api_base(raw_api_base)
+        self.netease_api_base = netease_fetch.normalize_api_base(raw_api_base)
         if raw_api_base and not self.netease_api_base:
             logger.warning(f"netease_api_base={raw_api_base} 不像是可用地址，已忽略")
-        if self.netease_api_base:
-            logger.info(f"网易云取歌首选本地服务: {self.netease_api_base}")
-        else:
-            logger.info("没配置 netease_api_base，网易云取歌只走官方接口 + 外链方式")
+        self.netease_fetcher = netease_fetch.NeteaseFetcher(
+            timeout=self.music_api_timeout,
+            cookie=self.netease_cookie,
+            meting_base=self.netease_meting_base,
+            api_base=self.netease_api_base,
+            api_token=str(config.get("netease_api_token", "") or "").strip(),
+        )
         self.alert_admin_on_cookie_expired = bool(
             config.get("alert_admin_on_cookie_expired", True)
         )
@@ -148,7 +156,7 @@ class MusicPlugin(Star):
         else:
             if self.default_api != "netease":
                 logger.warning(
-                    f"default_api={self.default_api} 已不支持（QQ 音源下线），改用网易云官方接口"
+                    f"default_api={self.default_api} 不是网易云取值，按网易云直连接口处理"
                 )
             from .api import NetEaseMusicAPI
             self.api = NetEaseMusicAPI()
@@ -839,7 +847,7 @@ class MusicPlugin(Star):
             logger.error(f"下载音频异常: {e}")
         return None
 
-    # ==================== 网易云官方接口（0.3.0 唯一取歌方式） ====================
+    # ==================== 网易云取歌（0.5.0 起照搬点歌插件 astrbot_plugin_music） ====================
 
     def _netease_temp_dir(self) -> str:
         """插件自己的临时音频目录（与本地音频下载共用，退出时会清理）。"""
@@ -852,14 +860,11 @@ class MusicPlugin(Star):
         return int(self.netease_quality) * 1000
 
     def _resolve_music_source(self, requested: Optional[str] = None) -> str:
-        """实际使用的搜索源：0.3.0 起锁死网易云。
+        """实际使用的搜索源：只有网易云。
 
         不管调用方（命令 / LLM 工具 / 卡片）传什么、配置里 default_api 写成什么，
-        最终都返回 ``netease``；传了 QQ 之类的值只记一条 debug，不改变结果。
+        最终都返回 ``netease``。
         """
-        source = str(requested or "").strip()
-        if source and source.lower() not in ("netease", "netease_nodejs", "网易云"):
-            logger.debug(f"音乐源 {source} 已下线（QQ 音源下线），按网易云处理")
         return "netease"
 
     def _short_failure_reason(self, detail: str) -> str:
@@ -962,7 +967,7 @@ class MusicPlugin(Star):
         self, event: AstrMessageEvent, reason: str, is_trial: bool
     ) -> None:
         """记一次 cookie 相关失败；连续 3 次才提醒，非 cookie 失败打断连续计数。"""
-        if not netease.is_cookie_failure(reason, is_trial):
+        if not netease_fetch.is_cookie_failure(reason, is_trial):
             if self._netease_cookie_fail_streak:
                 logger.info(
                     f"网易云取歌失败原因不是 cookie（{reason}），连续失败计数清零"
@@ -980,67 +985,33 @@ class MusicPlugin(Star):
     async def _fetch_netease_audio(
         self, event: AstrMessageEvent, song_id: str, song_name: str = ""
     ) -> tuple[Optional[str], str, bool]:
-        """取网易云整首歌：优先本地 NeteaseCloudMusicApi 服务，失败回落官方接口+外链。
+        """取网易云整首歌：走点歌插件那套（meting 直链 → 下载 → 80 秒闸门）。
+
+        底层是 ``netease_fetch.NeteaseFetcher``：先问 meting 要直链（点歌插件
+        ``netease`` 平台的做法，不吃 cookie），拿不到再换 NodeJS 服务
+        （点歌插件 ``netease_api`` 平台的做法，带 cookie 能下会员歌）。
+        下载完统一用 ffprobe 过 80 秒闸门。
 
         Returns:
             ``(本地文件路径 或 None, 失败原因, 是否试听)``。成功时失败原因为空串。
         """
         dest_dir = self._netease_temp_dir()
-        cookie = str(getattr(self, "netease_cookie", "") or "").strip()
-        reason = netease.REASON_NO_COOKIE
-        is_trial = False
+        if not str(getattr(self, "netease_cookie", "") or "").strip():
+            logger.debug("[取歌] 没配置 netease_cookie，走 meting 公开直链（会员歌可能只给试听）")
 
-        if not cookie:
-            logger.warning("没有配置 netease_cookie，取不到整首（没有备用音源）")
-            await self._record_netease_cookie_failure(event, reason, is_trial)
-            return None, reason, is_trial
-
-        api_base = str(getattr(self, "netease_api_base", "") or "").strip()
-
-        # ① 首选：本地 NeteaseCloudMusicApi 服务换直链后下载
-        if api_base:
-            logger.info(
-                f"网易云本地服务取整首: id={song_id} base={api_base} "
-                f"song={song_name}"
-            )
-            await self._send_progress_notice(event, step="正在从本地服务取网易云直链", song=song_name)
-            path, reason, is_trial = await asyncio.to_thread(
-                netease.download_by_api_service,
-                song_id,
-                cookie,
-                api_base,
-                self._netease_quality_br(),
-                dest_dir,
-                120,
-            )
-            if path:
-                self._reset_netease_cookie_state()
-                logger.info(f"网易云本地服务下载成功: id={song_id} file={path}")
-                return path, "", False
-            logger.warning(
-                f"网易云本地服务没拿到整首，回落外链方式: id={song_id} reason={reason}"
-            )
-
-        # ② 回落：官方接口判定 + 外链入口下载
-        logger.info(
-            f"网易云官方接口取整首: id={song_id} br={self._netease_quality_br()} "
-            f"song={song_name}"
-        )
         await self._send_progress_notice(event, step="正在取网易云直链", song=song_name)
-        path, reason, is_trial = await asyncio.to_thread(
-            netease.download_by_id,
-            song_id,
-            cookie,
-            self._netease_quality_br(),
-            dest_dir,
-            120,
+        path, reason, is_trial = await self.netease_fetcher.fetch_song(
+            song_id, dest_dir, self._netease_quality_br()
         )
         if path:
             self._reset_netease_cookie_state()
-            logger.info(f"网易云官方接口下载成功: id={song_id} file={path}")
+            logger.info(f"[取歌] 网易云整首取到: id={song_id} file={path}")
             return path, "", False
-        logger.warning(f"网易云官方接口也没拿到整首: id={song_id} reason={reason}")
 
+        logger.warning(
+            f"[取歌] 网易云没拿到整首: id={song_id} song={song_name or '未命名'} "
+            f"reason={reason} trial={is_trial}"
+        )
         await self._record_netease_cookie_failure(event, reason, is_trial)
         return None, reason, is_trial
 
@@ -1091,10 +1062,26 @@ class MusicPlugin(Star):
     async def _search_netease_songs(
         self, keyword: str, limit: int = 10
     ) -> tuple[list, str]:
-        """按歌名搜网易云，返回 ``(歌曲列表, 失败原因)``。"""
+        """按歌名搜网易云，返回 ``(歌曲列表, 失败原因)``。
+
+        先用点歌插件那套搜索（``music.163.com/api/search/get/web``），失败或没结果
+        再退回插件原来的搜索器；两者返回的都是 ``{id, name, artists}`` 形状的 dict。
+        """
         keyword = str(keyword or "").strip()
         if not keyword:
             return [], "没有歌名"
+
+        try:
+            songs = await asyncio.wait_for(
+                self.netease_fetcher.search_songs(keyword, limit),
+                timeout=self.music_api_timeout,
+            )
+        except Exception as exc:
+            logger.warning(f"[取歌] 点歌插件那套搜索失败（{keyword}）: {exc}")
+            songs = []
+        if songs:
+            return list(songs), ""
+
         api, temporary = self._netease_search_api()
         try:
             songs = await asyncio.wait_for(
@@ -1215,7 +1202,7 @@ class MusicPlugin(Star):
         判定顺序（0.3.0，所有取歌路径都只从这里出去）：
 
         1. 已经是存在的本地文件 → 直接返回；
-        2. 纯数字 → 当网易云 id，走官方接口 + cookie，过 80 秒闸门；
+        2. 纯数字 → 当网易云 id，走点歌插件那套取歌（meting → NodeJS 服务），过 80 秒闸门；
         3. ``^[0-9A-Za-z]{11,14}$`` 且含字母 → 只剩 QQ mid 的旧数据：不再碰任何
            QQ 音源，直接按歌名去网易云搜，搜不到就失败；
         4. 其它 → 当歌名：网易云搜索第一条的 id → 回到第 2 条，搜不到就失败。
@@ -3293,8 +3280,6 @@ class MusicPlugin(Star):
         
         try:
             limit = min(max(limit, 1), 10)
-            if platform and platform.lower() not in ('default', 'netease', 'netease_nodejs', '网易云'):
-                logger.info(f"音乐源 {platform} 已下线（QQ 音源下线），按网易云搜索")
             api_to_use, _search_api_temporary = self._netease_search_api()
             if _search_api_temporary:
                 _netease_api_inst = api_to_use
@@ -3360,7 +3345,7 @@ class MusicPlugin(Star):
             model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
                 例如：'塔菲'会自动匹配到tafeim.pth
             key_shift(number): 音调调整，范围为-12到12，默认为0
-            music_source(string, optional): 已忽略；0.3.0 起只用网易云官方接口取歌
+            music_source(string, optional): 已忽略；只用网易云取歌
         
         Returns:
             翻唱结果的描述信息（异步模式会立即返回"正在处理"）
@@ -3416,7 +3401,7 @@ class MusicPlugin(Star):
             model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
                 例如：'塔菲'会自动匹配到tafeim.pth
             key_shift(number): 音调调整，范围为-12到12，默认为0
-            music_source(string, optional): 已忽略；0.3.0 起只用网易云官方接口取歌
+            music_source(string, optional): 已忽略；只用网易云取歌
         
         Returns:
             翻唱结果的描述信息（异步模式会立即返回"正在处理"）
@@ -3591,40 +3576,19 @@ class MusicPlugin(Star):
             if not songs:
                 return f"❌ 未找到歌曲 '{song_name}'。"
             
-            # 智能匹配：如果搜索结果有多个，尝试找到和用户搜索词最匹配的一首
-            selected_song = songs[0]
-            if len(songs) > 1:
-                from difflib import SequenceMatcher
-                best_score = -1
-                
-                # 预处理搜索词：将繁体/特殊字符做简单归一化
-                normalized_search = song_name.lower().replace("宫", "宮")
-                search_keywords = normalized_search.replace("-", " ").replace("、", " ").split()
-                
-                for song in songs:
-                    song_title = song.get('name', '').lower()
-                    artist_name = song.get('artists', '').lower()
-                    song_info = f"{song_title} {artist_name}"
-                    
-                    # 1. 基础相似度
-                    score = SequenceMatcher(None, normalized_search, song_info).ratio()
-                    
-                    # 2. 关键词命中加分
-                    if len(search_keywords) > 0:
-                        match_count = sum(1 for kw in search_keywords if kw in song_info)
-                        score += (match_count / len(search_keywords)) * 1.5
-                        
-                    # 3. 歌名直接命中加分（非常重要，防止只匹配到歌手却选错歌）
-                    if song_title and (song_title in normalized_search or normalized_search in song_title):
-                        score += 2.0
-                        
-                    # 4. 歌手直接命中加分
-                    if artist_name and (artist_name in normalized_search or normalized_search in artist_name):
-                        score += 1.0
-                        
-                    if score > best_score:
-                        best_score = score
-                        selected_song = song
+            # 选歌：和点歌插件同一套严格匹配（宁可不选，也不选错）。
+            # 标题必须和搜索词互相包含、歌手对得上，平手时按标题长度和完全相等加分决出；
+            # 一条都不像就不选，交给用户确认，绝不再退化成“取第一条”。
+            selected_song = self._pick_best_song(songs, song_name, "")
+            if not selected_song:
+                logger.info(
+                    f"[CoverFlow:{flow_id}] stage=no_confident_match | "
+                    f"song={song_name} | candidates={len(songs)}"
+                )
+                return (
+                    f"❌ 网易云里没找到能确认是《{song_name}》的版本"
+                    "（可能只有翻唱、改名或版权受限），换个更全的歌名试试。"
+                )
 
             _, keys = self.get_models_display_list(api_type=api_type)
             selected_model = keys[model_index - 1]
@@ -3900,7 +3864,7 @@ class MusicPlugin(Star):
                 例如：'塔菲'会自动匹配到tafeim.pth，'maxmaxpoi'也能匹配
             key_shift(number, optional): 音调调整。RVC/SVC 范围 -12 到 12，SoulX-SVCVC 范围 -36 到 36；不指定则使用默认值或用户偏好。
                 调用此工具前，你应该分析原曲演唱者性别与目标模型音域的匹配关系（如周杰伦男声→塔菲喵女声）。但分析完成后请不要传入 key_shift，插件会根据分析结果自动应用配置中的升降调值（男→女用 male_to_female_shift，女→男用 female_to_male_shift）。只有当用户明确要求特定数值（如"升3调"）时才传入 key_shift。
-            music_source(string, optional): 已忽略；0.3.0 起只用网易云官方接口取歌
+            music_source(string, optional): 已忽略；只用网易云取歌
         
         Returns:
             翻唱结果描述（异步模式会立即返回"正在处理"）
@@ -5179,6 +5143,12 @@ class MusicPlugin(Star):
             logger.error(f"[MatsukoCover] 卸载时保存偏好失败: {e}")
         
         # 清理API session
+        try:
+            if hasattr(self, 'netease_fetcher') and self.netease_fetcher:
+                await self.netease_fetcher.close()
+        except Exception as e:
+            logger.debug(f"[MatsukoCover] 关闭取歌 session: {e}")
+
         try:
             if hasattr(self, 'api') and self.api:
                 await self.api.close()

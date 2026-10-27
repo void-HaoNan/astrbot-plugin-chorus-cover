@@ -62,24 +62,36 @@
     "default": true
   },
   "netease_cookie": {
-    "description": "网易云 MUSIC_U（取整首歌必需）",
+    "description": "网易云 MUSIC_U（备用取歌路径用）",
     "type": "string",
-    "hint": "在浏览器登录 music.163.com 后，从开发者工具 → Application → Cookies 里复制 MUSIC_U 的值（只填值，不要带 'MUSIC_U=' 前缀）。插件只保存在本机配置里，不会外传；留空则取不到整首，翻唱会直接失败（0.3.0 起没有备用音源）。",
+    "hint": "在浏览器登录 music.163.com 后，从开发者工具 → Application → Cookies 里复制 MUSIC_U 的值（只填值，不要带 'MUSIC_U=' 前缀）。0.5.0 起取歌实现照搬点歌插件：主路 meting 不吃 cookie，不填也能下大部分歌；但会员歌/高音质要靠备用 NodeJS 服务带上这个 cookie 才拿得到。插件只保存在本机配置里，不会外传。",
     "default": ""
   },
   "netease_quality": {
     "description": "网易云取歌音质（kbps）",
     "type": "int",
-    "hint": "官方接口的码率档位，只支持 128 / 192 / 320 三档，默认 320。填其它值会按 320 处理。本地服务取歌时对应 level 参数：320→exhigh、192→higher、128→standard。",
+    "hint": "只支持 128 / 192 / 320 三档，默认 320。备用 NodeJS 服务取歌时对应 level 参数：320→exhigh、192→higher、128→standard；meting 主路由它自己按接口给。填其它值会按 320 处理。",
     "default": 320,
     "minimum": 128,
     "maximum": 320
   },
-  "netease_api_base": {
-    "description": "本地 NeteaseCloudMusicApi 服务地址（首选取歌路径）",
+  "netease_meting_base": {
+    "description": "meting 取直链服务地址（主路）",
     "type": "string",
-    "hint": "在 D:\\PYMSS-RVC\\netease-api 下用 start.ps1 起的那个服务，默认 http://127.0.0.1:3000。插件会先用它换带签名的 CDN 直链再下载（能下会员歌），拿不到才回落原来的官方接口 + 外链方式；留空表示只用外链方式。端口被别的程序占了时，把这里改成实际端口（例如服务起在 3003 就填 http://127.0.0.1:3003）。",
-    "default": "http://127.0.0.1:3000"
+    "hint": "照搬点歌插件网易云平台的取直链方式：向「地址?type=song&id=歌曲id」要直链，返回的 url 直接下载。默认 https://api.qijieya.cn/meting/ ，不需要任何密钥；这个第三方服务哪天挂了，可以换成自建或其它 meting 实例。留空则用默认地址。",
+    "default": "https://api.qijieya.cn/meting/"
+  },
+  "netease_api_base": {
+    "description": "NodeJS 网易云 API 地址（备用路）",
+    "type": "string",
+    "hint": "取歌备用路，对应点歌插件 netease_api 平台：主路 meting 拿不到直链时才用它，先试 /song/url/v1?level=xxx（带 cookie 能下会员歌），再退回 /song/url。默认填点歌插件里那个 https://zm.wwoyun.cn ；本机起了 NeteaseCloudMusicApi 就填它的地址（例如服务在 3003 端口就填 http://127.0.0.1:3003）。留空表示不设备用路，只用 meting。",
+    "default": "https://zm.wwoyun.cn"
+  },
+  "netease_api_token": {
+    "description": "NodeJS 网易云 API 访问令牌（可选）",
+    "type": "string",
+    "hint": "备用取歌服务需要鉴权时填这里，插件会带上 Authorization: Bearer <令牌>。默认的 zm.wwoyun.cn 不需要，留空即可。",
+    "default": ""
   },
   "alert_admin_on_cookie_expired": {
     "description": "网易云 cookie 连续失效时提醒管理员",
