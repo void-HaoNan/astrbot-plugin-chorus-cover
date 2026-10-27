@@ -26,6 +26,7 @@ from gradio_client import Client
 from . import netease
 from .selection import CoverSelectionUI
 from .outbound import Outbound
+from .intent_gate import cover_refusal, is_music_request, message_text as event_message_text
 
 MODEL_ALIAS_SEPARATOR = "|||"
 
@@ -64,7 +65,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱（自维护分支，基于 matsuko_cover 2.13.0，AGPL-3.0）：对话出口统一走模型、失败结果结构化",
-    "0.4.2",
+    "0.4.3",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -285,7 +286,11 @@ class MusicPlugin(Star):
         self.max_local_audio_size_mb = config.get("max_local_audio_size_mb", 30)
         self.enable_local_audio_cover = config.get("enable_local_audio_cover", True)
         self.local_audio_auto_trigger = config.get("local_audio_auto_trigger", False)
-        self.local_audio_trigger_keywords = config.get("local_audio_trigger_keywords", ["翻唱", "处理", "修音", "cover"])
+        # 只留「翻唱」「变声」这类明确想唱的词；「转换/处理/修音」会把只想聊天
+        # 或点歌的消息也吞进来，0.4.3 起从默认词表里去掉。词表见 intent_gate.py。
+        self.local_audio_trigger_keywords = config.get(
+            "local_audio_trigger_keywords", ["翻唱", "变声"]
+        )
         self.local_audio_default_model = config.get("local_audio_default_model", "")
         self.local_audio_default_shift = config.get("local_audio_default_shift", 0)
         self._audio_cache_lock = asyncio.Lock()
@@ -563,6 +568,20 @@ class MusicPlugin(Star):
             return False
         ext = os.path.splitext(filename.lower())[1]
         return ext in {".mp3", ".wav", ".ogg", ".m4a", ".flac", ".wma", ".aac", ".mp4"}
+
+    def _reject_music_request(self, event: AstrMessageEvent, tool_name: str) -> Optional[str]:
+        """翻唱入口的统一闸门：这条消息是点歌需求时不执行翻唱。
+
+        判定逻辑和词表都在 ``intent_gate.py``，这里只负责记日志、把提示句交回模型。
+        返回 ``None`` 表示放行；返回字符串表示拒绝（字符串会作为工具结果给模型）。
+        """
+        hint = cover_refusal(event)
+        if hint:
+            logger.info(
+                f"[IntentGate] {tool_name} 未执行：这条消息是点歌需求 | "
+                f"text={event_message_text(event)!r}"
+            )
+        return hint
 
     def _infer_key_shift_from_filename(self, filename: str, model_display: str = "") -> Optional[int]:
         """根据音频文件名自动推断合适的 key_shift（本地兜底逻辑，不依赖LLM）
@@ -1093,19 +1112,81 @@ class MusicPlugin(Star):
                 except Exception as exc:
                     logger.debug(f"关闭临时网易云搜索会话失败: {exc}")
 
-    async def _search_netease_id(self, keyword: str) -> tuple[str, str]:
-        """按歌名搜网易云，取第一条的数字 id；返回 ``(id 或空串, 失败原因)``。"""
-        songs, reason = await self._search_netease_songs(keyword, limit=5)
+    @staticmethod
+    def _pick_best_song(songs: list, query: str, artist: str = "") -> dict:
+        """在搜索结果里挑**最确定**的一首；一个都不像就返回空 dict。
+
+        借自点歌插件 astrbot_plugin_music 的 ``pick_best_song``：宁可不选，也不选错。
+        规则：
+        1. 归一化（去掉标点/空白、转小写）后，候选歌名必须与查询互为子串，否则淘汰；
+        2. 指定了歌手时，歌手必须包含在候选歌手串里，否则淘汰；
+        3. 查询里多出来的词（比如「0.9」「深情版」）必须能在歌手或歌名里找到，否则淘汰；
+        4. 打分：歌名长度×2，完全相等 +100，歌手命中 +100，取最高分。
+        """
+        import re
+
+        def normalize(value: str) -> str:
+            return re.sub(r"[\W_]+", "", str(value or "").casefold())
+
+        candidates = [s for s in (songs or []) if isinstance(s, dict)]
+        if not candidates:
+            return {}
+
+        normalized_query = normalize(query)
+        expected_artist = normalize(artist)
+        if not normalized_query:
+            return candidates[0] if not expected_artist else {}
+
+        matches = []
+        for song in candidates:
+            title = normalize(song.get("name") or "")
+            singer = normalize(song.get("artists") or "")
+            if not title:
+                continue
+
+            if title in normalized_query:
+                extra = normalized_query.replace(title, "", 1)
+            elif normalized_query in title:
+                extra = ""
+            else:
+                continue
+
+            if expected_artist and expected_artist not in singer:
+                continue
+            if extra and not expected_artist:
+                if extra not in singer and extra not in title:
+                    continue
+
+            score = len(title) * 2
+            if title == normalized_query:
+                score += 100
+            if expected_artist:
+                score += 100
+            matches.append((score, song))
+
+        if not matches:
+            return {}
+        return max(matches, key=lambda item: item[0])[1]
+
+    async def _search_netease_id(self, keyword: str, artist: str = "") -> tuple[str, str]:
+        """按歌名搜网易云，挑最匹配的一首取数字 id；返回 ``(id 或空串, 失败原因)``。"""
+        songs, reason = await self._search_netease_songs(keyword, limit=10)
         if not songs:
             return "", reason or "没搜到"
-        first = songs[0] if isinstance(songs[0], dict) else {}
-        song_id = str(first.get("id") or "").strip()
+        best = self._pick_best_song(songs, keyword, artist)
+        if not best:
+            logger.info(
+                f"[取歌] 网易云搜到 {len(songs)} 条，但没有一条能确认是这首"
+                f"（关键词={keyword}，歌手={artist or '未指定'}）"
+            )
+            return "", "没有一条能确认是这首（可能只有翻唱、改名或版权受限）"
+        song_id = str(best.get("id") or "").strip()
         if not song_id.isdigit():
             logger.warning(f"网易云搜索命中的 id 不是数字（{song_id!r}），按没搜到处理")
             return "", "搜到的 id 不是数字"
         logger.info(
             f"[取歌] 网易云按名搜索命中: {keyword} → id={song_id}"
-            f"（{first.get('name')} - {first.get('artists')}）"
+            f"（{best.get('name')} - {best.get('artists')}）"
         )
         return song_id, ""
 
@@ -1175,7 +1256,7 @@ class MusicPlugin(Star):
             if not keyword or keyword == raw_id:
                 logger.info(f"[取歌] QQ mid {raw_id} 没有歌名可搜，放弃")
                 return None, "这条是 QQ mid，但拿不到歌名，网易云搜不了", False
-            song_id, search_reason = await self._search_netease_id(keyword)
+            song_id, search_reason = await self._search_netease_id(keyword, artists)
             if not song_id:
                 logger.info(f"[取歌] QQ mid {raw_id} 按名搜网易云失败: {search_reason}")
                 return None, f"按歌名搜网易云: {search_reason}", False
@@ -1188,7 +1269,7 @@ class MusicPlugin(Star):
         # 4) 其它字符串 → 当歌名，先搜网易云拿数字 id
         keyword = name or raw_id
         logger.info(f"[取歌] {label} 按歌名取: {keyword}")
-        song_id, search_reason = await self._search_netease_id(keyword)
+        song_id, search_reason = await self._search_netease_id(keyword, artists)
         if song_id:
             path, reason, is_trial = await self._fetch_netease_audio(event, song_id, label)
             if path:
@@ -3287,6 +3368,9 @@ class MusicPlugin(Star):
         注意：
             RVC功能可能已在配置中禁用，此时会返回错误提示。
         '''
+        rejected = self._reject_music_request(event, "rvc_cover")
+        if rejected:
+            return rejected
         if not self.enable_rvc:
             return "❌ RVC 功能已在配置中禁用。如需使用请在插件配置中设置 enable_rvc 为 true，或使用 svc_cover 工具进行SVC翻唱。"
         if model_name:
@@ -3340,6 +3424,9 @@ class MusicPlugin(Star):
         注意：
             SVC功能可能已在配置中禁用，此时会返回错误提示。
         '''
+        rejected = self._reject_music_request(event, "svc_cover")
+        if rejected:
+            return rejected
         if not self.enable_svc:
             return "❌ SVC 功能已在配置中禁用。如需使用请在插件配置中设置 enable_svc 为 true，或使用 rvc_cover 工具进行RVC翻唱。"
         if model_name:
@@ -3398,6 +3485,9 @@ class MusicPlugin(Star):
         Returns:
             后台任务启动结果；完成后会自动发送音频和实际种子
         '''
+        rejected = self._reject_music_request(event, "svcvc_cover")
+        if rejected:
+            return rejected
         if not self.enable_svcvc:
             return "❌ SoulX-SVCVC 已禁用，请在插件配置中开启 enable_svcvc。"
 
@@ -3822,6 +3912,9 @@ class MusicPlugin(Star):
             - 音乐源固定为网易云（QQ 音源已下线）
             - 如果指定的 api_type 已被禁用，会自动切换到可用的引擎或返回提示
         '''
+        rejected = self._reject_music_request(event, "smart_cover")
+        if rejected:
+            return rejected
         if not self.enable_smart_cover:
             return "智能单步翻唱功能已在配置中禁用。请使用对应的独立翻唱工具。"
         
@@ -4097,6 +4190,9 @@ class MusicPlugin(Star):
         Returns:
             任务确认信息（实际结果会异步推送到聊天中）
         '''
+        rejected = self._reject_music_request(event, "batch_cover")
+        if rejected:
+            return rejected
         if not self.enable_batch_cover:
             return "批量翻唱功能已在配置中禁用，请逐个使用 smart_cover。"
         
@@ -4639,6 +4735,9 @@ class MusicPlugin(Star):
         Returns:
             处理结果的描述信息（异步执行，完成后自动发送音频）
         '''
+        rejected = self._reject_music_request(event, "cover_absolute_path_audio")
+        if rejected:
+            return rejected
         if not self.enable_local_audio_cover:
             return "❌ 本地音频翻唱功能未启用。"
             
@@ -4763,6 +4862,9 @@ class MusicPlugin(Star):
         Returns:
             处理结果的描述信息（异步执行，完成后自动发送音频）
         '''
+        rejected = self._reject_music_request(event, "cover_local_audio")
+        if rejected:
+            return rejected
         if not self.enable_local_audio_cover:
             return "❌ 本地音频翻唱功能未启用。"
         
@@ -4985,7 +5087,13 @@ class MusicPlugin(Star):
         # 检查是否触发自动翻唱
         if not self.local_audio_auto_trigger:
             return
-        
+
+        # 点歌类消息一律不自动翻唱：判定和词表在 intent_gate.py。
+        # 缓存音频的那段在前面，所以之后手动发 /本地翻唱 仍然能用最近这条音频。
+        if is_music_request(msg_text):
+            logger.info("[IntentGate] 点歌类消息，跳过本地音频自动翻唱")
+            return
+
         # 检查消息文字是否包含触发关键词
         has_trigger = any(kw in msg_text for kw in self.local_audio_trigger_keywords)
         

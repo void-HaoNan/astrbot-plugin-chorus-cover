@@ -26,7 +26,7 @@
 
 适用于 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 的 AI 翻唱插件，支持 **RVC、SVC-Fusion、SoulX-SVCVC** 三种语音转换后端，以及网易云音乐、本地音频和 LLM 工具调用（QQ 音源已于 0.3.0 下线）。
 
-> 当前版本：**v0.4.0**（自维护分支，基线为上游 v2.13.0）
+> 当前版本：**v0.4.3**（自维护分支，基线为上游 v2.13.0）
 >
 > 许可证：**GNU AGPL-3.0**
 >
@@ -57,6 +57,7 @@
 - 取消任务会同步取消插件协程和 Gradio 推理任务，不再只隐藏任务状态。
 - QQ 语音发送失败时自动继续尝试发送音频文件。
 - 默认关闭旧版 EQ/压缩/混响人声后处理，避免重复处理损伤音质；需要旧音色时可开启 `vocal_postprocess`。
+- **点歌 / 翻唱分开判定**：所有翻唱入口先过 `intent_gate.py` 的统一闸门，点歌类消息不会被翻唱接走（见 [点歌和翻唱怎么分](#点歌和翻唱怎么分)）。
 
 ## 架构
 
@@ -237,6 +238,8 @@ SoulX-SVCVC 使用参考音频进行零样本音色转换，不需要训练 `.pt
 | `enable_send_file` | `false` | 除 QQ 语音外再发送文件 |
 | `inference_timeout` | `300` | 推理超时（秒） |
 | `llm_force_mode` | `false` | 禁用手动命令，只允许 LLM 工具 |
+| `local_audio_trigger_keywords` | `["翻唱", "变声"]` | 本地音频自动触发词。默认只留明确想唱的词；「转换」「处理」「修音」这类泛词会把点歌和闲聊也吞进来，已从默认值去掉 |
+| `local_audio_auto_trigger` | `false` | 是否自动翻唱带音频的消息。默认关闭，避免和点歌抢活；关闭后仍可用 `/本地翻唱` 或 LLM 工具 |
 
 SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时提高到 `9000` 秒。
 
@@ -340,6 +343,20 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 列出现在可用的 SoulX 参考音色
 ```
 
+### 点歌和翻唱怎么分
+
+翻唱插件的每个执行入口（`smart_cover`、`rvc_cover`、`svc_cover`、`svcvc_cover`、`batch_cover`、
+`cover_absolute_path_audio`、`cover_local_audio`，以及本地音频自动触发）都会先过一道统一闸门
+（`intent_gate.py`）：
+
+- 消息里出现点歌类词（`点歌`、`放歌`、`听歌`、`来一首`、`放一首`、`播一首`，以及「放首歌」这类
+  省略写法），并且**没有**翻唱类词（`唱`、`翻唱`、`翻唱成`、`变声`、`cover`、`用…唱`）
+  → 判定为点歌需求：不注册任务、不执行翻唱，只把「这是点歌需求」这句事实回给模型，由模型引导
+  用户用「点歌 歌名」，或直接调用点歌插件的 `play_song_by_name` 工具。
+- 只要出现翻唱类词就放行：「唱晴天」「翻唱一下晴天」「用三月七唱晴天」「变声」都照常翻唱。
+
+词表集中在 `intent_gate.py` 的 `TICKET_WORDS_MUSIC` / `TICKET_WORDS_COVER` 两个常量，以后加词只改那里。
+
 ## 进度、缓存和结果发送
 
 - 支持接收 Gradio 的下载、人声分离、F0、逐段推理、混音和导出进度。
@@ -379,6 +396,13 @@ SoulX 在 AMD 上处理长歌曲时建议把 `inference_timeout` 和任务超时
 检查 `svcvc_random_seed` 是否关闭。歌曲内容、参考音色、种子、采样步数、CFG、升降调或模型资产变化都会生成新的缓存键。
 
 ## 更新日志
+
+### v0.4.3（本分支）
+
+- 新增统一需求闸门 `intent_gate.py`：`TICKET_WORDS_MUSIC` / `TICKET_WORDS_COVER` 两个词表集中管理判定；点歌类消息（含「嗯。点歌。失眠飞行。」这种不按命令格式发的）不会再被 `smart_cover` 等翻唱入口接走。
+- 闸门接入 `smart_cover`、`rvc_cover`、`svc_cover`、`svcvc_cover`、`batch_cover`、`cover_absolute_path_audio`、`cover_local_audio` 和本地音频自动触发；命中后只回事实给模型，不执行翻唱。
+- `local_audio_trigger_keywords` 默认收窄为 `["翻唱", "变声"]`；`local_audio_auto_trigger` 默认改为 `false`，不再主动抢带音频的消息。
+- 同步线上已有的 `_pick_best_song`（搜歌只接受歌名/歌手能对上的结果，宁可不选也不选错），仓库与线上保持一致。
 
 ### v0.4.0（本分支）
 
