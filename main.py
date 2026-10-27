@@ -118,7 +118,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.12.1",
+    "0.12.2",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -420,7 +420,7 @@ class MusicPlugin(Star):
             await event.send(event.plain_result("生成失败，后端未返回有效文件路径。"))
             return
         if cache_hit:
-            await event.send(event.plain_result(f"⚡ 命中缓存！这首歌松子之前已经唱过啦，直接发给你nya～"))
+            await event.send(event.plain_result("⚡ 命中缓存，这首之前唱过，直接发给你～"))
         record_sent = False
         file_sent = False
         record_error = None

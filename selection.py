@@ -6,7 +6,6 @@ import secrets
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent
-from astrbot.api.message_components import Node, Plain
 from astrbot.core.utils.session_waiter import (
     FILTERS,
     SessionController,
@@ -224,14 +223,8 @@ class _Menu:
             except Exception as exc:
                 logger.warning("[MatsukoCover] QQ card failed: %s", type(exc).__name__)
                 self.cards = False
-        if event.get_platform_name() == "aiocqhttp":
-            await event.send(
-                event.chain_result(
-                    [Node(uin=1109587454, name="松子", content=[Plain(text)])]
-                )
-            )
-        else:
-            await event.send(event.plain_result(text).use_markdown(False))
+        # 0.12.2：同样不再用合并转发节点，直接一条普通消息，谁发的就是机器人自己
+        await event.send(event.plain_result(text).use_markdown(False))
 
     async def _send_buttons(
         self, event: AstrMessageEvent, text: str, visible: list[tuple[int, str]]
@@ -458,20 +451,16 @@ class CoverSelectionUI:
             self._pending.pop(key, None)
 
     async def send_list(self, event: AstrMessageEvent, text: str) -> None:
-        """Render model listings without unsupported forwarded nodes on QQ Official.
+        """发送模型/名单类短列表：直接一条普通文字消息。
 
-        Args:
-            event: Destination message event.
-            text: Complete model listing to display.
+        0.12.2 起不再塞进合并转发节点（聊天记录）——那是上游留下的写法：
+        节点里的发送者被写死成别人的 QQ 号和昵称，列表本身又只有十几行，
+        折叠起来反而要点两下才能看全。
         """
-        if event.get_platform_name() == "aiocqhttp":
-            await event.send(
-                event.chain_result(
-                    [Node(uin=1109587454, name="松子", content=[Plain(text)])]
-                )
-            )
+        if event.get_platform_name() in OFFICIAL_PLATFORMS and self.cards:
+            await self.send_card(event, "🎙️ 翻唱音色", text)
             return
-        await self.send_card(event, "🎙️ 翻唱音色", text)
+        await event.send(event.plain_result(text).use_markdown(False))
 
     async def send_card(
         self, event: AstrMessageEvent, title: str, text: str, actions=()
