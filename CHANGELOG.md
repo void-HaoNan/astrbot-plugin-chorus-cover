@@ -3,6 +3,43 @@
 本文件记录 **astrbot_plugin_chorus_cover**（副歌翻唱 · 自维护分支）的变更。
 上游 `sdfsfsk/matsuko_cover` 的历史日志请见上游仓库，此处只记本分支的差异。
 
+0.9.0 之前的条目保留发布当时的原文；其中提到的引擎、命令与配置已在 0.9.0 移除，
+现在只剩 RVC 一条链路，以本文件最上方与 `README.md` 为准。
+
+## v0.9.0（2026-10-27）
+
+**收窄为纯 RVC 插件**：移除 SVC 与 SoulX 参考音色两套引擎的命令与配置，以及已下线的 QQ 音源兼容项；
+设置页只保留生效项，命令表 / 工具表 / 配置表按删完之后的真实情况重写。
+
+### 移除
+
+- **命令 8 个**：两套引擎各自的翻唱入口、模型/音色刷新、后端地址设置、分离模型列出与切换。
+- **工具 2 个**：SVC 翻唱工具、SoulX 参考音色翻唱工具。
+- **配置 26 项**：两套引擎的地址、开关、模型别名与运行参数，加上已下线的 QQ 音乐开关、
+  第三方 Key、Node.js 音源地址、默认音源选择、默认翻唱类型，以及从未生效的工具超时项。
+- **代码**：旧音源接口文件 `api.py`（QQ / 网易云直连实现）、三引擎抽象层（取模型、取地址、
+  取启用状态、引擎名、音域范围、有效音调）、SoulX 专属的分离参数与音色列表方法、
+  旧的音源选择函数、QQ mid 识别、`import secrets`。
+
+### 变更
+
+- 引擎参数、分支、日志全部按 RVC 写死，不再有按引擎开关分叉的判断；
+  `_predict_cover` / `_do_cover` / `_execute_local_cover` / `smart_cover` / `batch_cover`
+  等入口去掉引擎类型与音乐源参数。
+- `search_music` 改走 `source_router.search_candidates`，与取歌共用同一套音源顺序。
+- 缓存命令只认 RVC：`/查看翻唱缓存`、`/清理翻唱缓存` 不再接受选择后端的参数。
+- 补上代码一直在读、schema 里缺的 `local_audio_cache_ttl`（默认 300 秒）。
+- 保留并继续生效：RVC 模型列表/刷新、`rvc_default_model` 下拉、本地音频翻唱、批量翻唱、
+  任务查看/取消、统计、缓存命令、`render_mode`（chorus/full/custom）与 `chorus_seconds`、
+  多音源路由与 80 秒闸门、统一出口 `outbound`（进度/重试默认静音、失败只说一句）。
+
+### 验证
+
+- 全部 `.py` 通过 `py_compile`；`_conf_schema.json` 通过 `json.loads`（70 项）。
+- AST 列出命令 13 个、工具 14 个，均无相关残留；`self.*` 调用全部能对上方法定义。
+- 代码 / 配置 / schema 全目录 grep，无已删除的命令、配置、地址字符串。
+- 用假 event 的最小桩验证模块可 import、`MusicPlugin` 可实例化（不连网）。
+
 ## v0.8.0（2026-10-27）
 
 选歌判定按用户定的规则重做：**整串当歌名、歌手只在明确指定时生效、别名按拼接匹配、
@@ -25,7 +62,7 @@ id `3445953575`《雨爱》/ Settle一虾子 / 别名「司凤版」/ 138 秒。
 - **搜索词**：`_search_keywords` 只返回 `song_name` 原文整串，不再补「歌名 + 第一位歌手」，
   不拆版本名；`artist` 只当过滤条件。
 - **入口拆参**：`_do_cover`、`_smart_cover_async` 增加 `artist_name` 参数；
-  `smart_cover` / `rvc_cover` / `svc_cover` / `svcvc_cover` 不再把歌手拼进 `search_query`，
+  `smart_cover` / `rvc_cover` / 另外两个引擎的翻唱工具不再把歌手拼进 `search_query`，
   歌名和歌手分开交给 `find_song`。
 - **工具 docstring 改写**：明确「唱雨爱司凤版 → song_name='雨爱司凤版'，artist 不填」
   「唱周杰伦的晴天 → song_name='晴天'，artist='周杰伦'」「版本名/别名属于歌名的一部分，
@@ -86,7 +123,7 @@ id `3445953575`《雨爱》/ Settle一虾子 / 别名「司凤版」/ 138 秒。
   （合成包名保证它内部的相对 import 正常），cookie/uin 从
   `data/config/astrbot_plugin_music_config.json` 读；QQ 音乐没配 `uin` 时跳过并记一行日志，
   绝不抛异常中断整条链路。
-- `disable_netease` / `disable_qqmusic` / `enable_qqmusic` 保留但不再生效（改由 `source_order` 控制），
+- 旧的 QQ 音源开关（禁用网易云 / 只用网易云 / 启用 QQ 音乐）保留但不再生效（改由 `source_order` 控制），
   schema 里的说明同步改掉。
 
 ### 验证
@@ -128,7 +165,7 @@ id `3445953575`《雨爱》/ Settle一虾子 / 别名「司凤版」/ 138 秒。
 
 ### 说明
 
-- 时长参数只对 RVC 后端（`chorus-mw` 0.7.0+）生效；SVC / SoulX-SVCVC 后端没有这组参数，
+- 时长参数只对 RVC 后端（`chorus-mw` 0.7.0+）生效；SVC / SoulX 后端没有这组参数，
   插件自动跳过，行为不变。
 - 中间层侧改动见 `chorus-mw` 的 CHANGELOG 0.7.0：先切后分离、常驻 worker、去混响与伴奏处理并行。
 
@@ -161,7 +198,7 @@ id `3445953575`《雨爱》/ Settle一虾子 / 别名「司凤版」/ 138 秒。
   **80 秒 `ffprobe` 闸门保留**，量不到时长照样判失败。
 - 删除说明性日志横幅：`QQ 音源已下线：搜歌与取歌只走网易云官方接口`、
   `网易云取歌首选本地服务: …`、`没配置 netease_api_base，网易云取歌只走官方接口 + 外链方式`、
-  `音乐源 xxx 已下线（QQ 音源下线），按网易云处理/搜索`；`default_api` 那条警告改成只说事实。
+  `音乐源 xxx 已下线（QQ 音源下线），按网易云处理/搜索`；旧的「默认音源」配置那条警告改成只说事实。
   正常 `[取歌] …` 日志与错误日志全部保留。
 
 ### 配置
@@ -189,7 +226,7 @@ id `3445953575`《雨爱》/ Settle一虾子 / 别名「司凤版」/ 138 秒。
 - **`intent_gate.py`**：判定逻辑和词表集中在这里（`TICKET_WORDS_MUSIC` / `TICKET_WORDS_COVER`）。
   消息里出现点歌类词（点歌、放歌、听歌、来一首、放一首、播一首，以及「放首歌」这类省略写法），
   且**不包含**翻唱类词（唱、翻唱、翻唱成、变声、cover、用…唱）→ 判定为点歌需求。
-- 闸门接在每个翻唱入口：`smart_cover`、`rvc_cover`、`svc_cover`、`svcvc_cover`、`batch_cover`、
+- 闸门接在每个翻唱入口：`smart_cover`、`rvc_cover`、另外两个引擎的翻唱工具、`batch_cover`、
   `cover_absolute_path_audio`、`cover_local_audio`，以及本地音频自动触发 `on_message_with_audio`。
   命中后只把「这是点歌需求」这句事实作为工具结果回给模型（并建议用「点歌 歌名」或点歌插件的
   `play_song_by_name`），不注册任务、不执行翻唱。
@@ -304,15 +341,15 @@ id `3445953575`《雨爱》/ Settle一虾子 / 别名「司凤版」/ 138 秒。
 ### 移除
 
 - **`netease.py`**：删除 `download_via_lx()`、`build_lx_url()`、`probe_duration_ms()` 以及全部 `REASON_LX_*` 常量与 lx 相关辅助函数；文件只剩官方接口判定 + 外链下载这一条路，`download_by_id()` 核心逻辑未改。
-- **`main.py`**：删除 `_fetch_lx_audio()`、`_fetch_qq_audio()`、`_handle_qq_cover()` 与 `/qqrvc`、`/qqsvc`、`/qqsvcvc`、`/qq点歌` 四个 QQ 入口；`_fetch_netease_audio()` 去掉全部洛雪兜底，取不到整首直接失败。
+- **`main.py`**：删除 `_fetch_lx_audio()`、`_fetch_qq_audio()`、`_handle_qq_cover()` 与四个 QQ 入口命令（`/qq点歌` 及三个 QQ 翻唱入口）；`_fetch_netease_audio()` 去掉全部洛雪兜底，取不到整首直接失败。
 - **`_conf_schema.json`**：删除洛雪地址、洛雪认证头、洛雪兜底开关三项配置；`api.py` 里已废弃的第三方音源短路注释一并清掉。
 
 ### 变更为只用网易云
 
-- `disable_qqmusic` 默认改为 `true` 并在代码里固定为 `True`（描述写明“已锁死只用网易云”）；`_resolve_music_source()` 无论调用方或配置怎么写，最终一律返回网易云。
+- 「只用网易云」开关默认改为 `true` 并在代码里固定为 `True`（描述写明“已锁死只用网易云”）；`_resolve_music_source()` 无论调用方或配置怎么写，最终一律返回网易云。
 - `_prepare_song_audio()`：纯数字 → 网易云 id；旧的 QQ mid → 不再碰 QQ，直接按歌名去网易云搜，搜不到就失败；其它字符串 → 按歌名搜网易云；全部只过官方接口。
 - `_do_cover()` 与 `search_music()` 删掉 QQ 搜索分支与风控重试，网易云搜索失败直接给失败原因。
-- `default_api=qqmusic` 或未知值一律回落网易云官方接口并记 warning；`disable_netease` 保留读取但按网易云继续（只记 warning）。
+- 旧的「默认音源」配置填 QQ 或未知值一律回落网易云官方接口并记 warning；「禁用网易云」开关保留读取但按网易云继续（只记 warning）。
 
 ### 版本
 
@@ -355,13 +392,13 @@ id `3445953575`《雨爱》/ Settle一虾子 / 别名「司凤版」/ 138 秒。
      （规格里写的是 11~12 位，但实测线上报错的两个 mid `0039MnYb0qxYhV`、`003YYGKC1DTKmZ` 都是 14 位，所以按 11~14 位认，否则这两个 id 会漏进"按歌名搜索"。）
   4. 其它 → 当歌名：网易云搜索第一条的 id 回到第 2 条，搜不到再洛雪 `/link/wy/<歌名>` 试一次。
   每一步失败的原因按顺序串成一句中文，技术细节只写 logger。
-- 配置项 `disable_qqmusic`（bool，默认 `false`）：开启后搜歌阶段只走网易云，不再拿回 QQ mid；`/qqrvc` 等 QQ 入口会提示改用网易云命令。两个搜索源同时禁用时按网易云处理并记 warning。
+- 配置项「只用网易云」开关（bool，默认 `false`）：开启后搜歌阶段只走网易云，不再拿回 QQ mid；旧的 QQ 入口会提示改用网易云命令。两个搜索源同时禁用时按网易云处理并记 warning。
 - `netease.py` 新增公开的 `probe_duration_ms(path)`，供插件给 QQ 直链 / 本地文件做 80 秒闸门。
 
 ### 变化
 
 - **批量翻唱不再把 id 交给中间层**：`_do_cover`（LLM 工具 / 批量走这条）和 `_send_song`（卡片 / 命令选歌走这条）都改成调统一入口，先拿到本地音频文件再提交；`song_input_for_api = str(selected_song["id"])` 这类写法已全部删除（grep 确认无残留）。
-- **修掉"网易云搜不到这首歌：<QQ mid>"的根因**：`default_api=qqmusic` 时 `self.api` 是 QQ 搜索器，而网易云分支直接复用它，拿到的 id 其实是 mid。现在网易云这条路固定用"确定是网易云"的搜索器（`_netease_search_api`），`self.api` 是 QQ 时临时新建 `NetEaseMusicAPI`。
+- **修掉"网易云搜不到这首歌：<QQ mid>"的根因**：旧「默认音源」配置为 QQ 时 `self.api` 是 QQ 搜索器，而网易云分支直接复用它，拿到的 id 其实是 mid。现在网易云这条路固定用"确定是网易云"的搜索器，`self.api` 是 QQ 时临时新建网易云实现。
 - **洛雪兜底支持多源**：洛雪下载函数不再强制纯数字 id（`tx` 传 mid、`wy` 可传歌名），落盘文件名做了安全化处理；按歌名兜底时 URL 路径段做百分号编码（中文直接拼进 URL 会让 `urllib` 抛 `UnicodeEncodeError`）。
 - **批量报告只说人话**：每条失败改成"这首拿不到音源 / 生成超时了 / 这个引擎被禁用了"这类短句，中间层原始报错、重试次数等技术细节只进日志；批量整体异常的报告也收敛成一句。
 - `_fetch_netease_audio` 返回值补上"是否试听"，供统一入口串失败原因。
@@ -369,7 +406,7 @@ id `3445953575`《雨爱》/ Settle一虾子 / 别名「司凤版」/ 138 秒。
 ### 验证
 
 - 六个 Python 文件 `py_compile` 全通过。
-- 临时自检脚本（假对象 / monkeypatch，不真下歌）覆盖：本地文件直通、纯数字走网易云、QQ mid 走洛雪失败后回落到按名搜索、歌名搜索不到、`disable_qqmusic=true` 时搜歌不调 QQ，全部通过；脚本跑完已删除。
+- 临时自检脚本（假对象 / monkeypatch，不真下歌）覆盖：本地文件直通、纯数字走网易云、QQ mid 走洛雪失败后回落到按名搜索、歌名搜索不到、「只用网易云」开关为 true 时搜歌不调 QQ，全部通过；脚本跑完已删除。
 - 已同步到线上插件目录，逐文件 SHA256 对齐；未重启服务。
 
 ## v0.2.0（2026-10-27）
@@ -414,7 +451,7 @@ id `3445953575`《雨爱》/ Settle一虾子 / 别名「司凤版」/ 138 秒。
 
 - **进度提示 / 重试提示默认静音**：两个开关缺省关闭，关掉时一条都不发；打开后也只由模型说一句人话，不再刷"⏳ 遇到风控，正在自动重试…"这类模板句。
 - **失败只发一句话**：失败时不再把整段 `result` 字符串（重试次数、错误码、可能原因清单）甩给用户，技术细节只写 `logger`；用户看到的是一句"这首没唱成，换个歌名我再试一次"级别的人话。
-- **工具返回值去装饰**：`rvc_cover` / `svc_cover` / `svcvc_cover` / `smart_cover` 不再返回"🎵 正在从【X】用【Y】翻唱《Z》…请稍等"，改为一句中性短句交给 LLM 组织措辞（避免"工具结果 + LLM 回复"两次说话）。
+- **工具返回值去装饰**：`rvc_cover` / 另外两个引擎的翻唱工具 / `smart_cover` 不再返回"🎵 正在从【X】用【Y】翻唱《Z》…请稍等"，改为一句中性短句交给 LLM 组织措辞（避免"工具结果 + LLM 回复"两次说话）。
 - **失败判断去关键词**：`_smart_cover_async`（以及批量翻唱）只认 `result.startswith("❌")` 或 `result.startswith("FAIL:")`，删掉"失败/错误/超时/未找到/无法获取/触发风控/当前没有/已禁用"的关键词匹配——正常文案里带"失败"两个字会被误判成任务失败。`_do_cover` 的返回值协议不变，保留 `❌` 前缀兼容现有返回点。
 - 出口层自身异常（拿不到 provider、模型调用失败、发送失败）全部吞掉并退回极短兜底文本，只记 `warning`，不影响翻唱主流程。
 

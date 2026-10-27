@@ -12,7 +12,7 @@
 | 上游再上游 | <https://github.com/CCYellowStar2/astrbot_plugin_rvc_svc>（上游 README 注明基于该项目扩展） |
 | 本分支仓库 | <https://github.com/void-HaoNan/astrbot-plugin-chorus-cover> |
 | 本分支维护者 | void-HaoNan |
-| 本分支版本 | v0.1.0 |
+| 本分支版本 | v0.9.0 |
 
 ## 许可证
 
@@ -27,15 +27,17 @@
 
 1. **新增 `outbound.py`**：统一对话出口 `Outbound`，把进度提示、风控重试提示、报错详情三类硬编码文本收敛到一个出口，交给人格模型（`provider.text_chat`）说人话；出口层异常全部吞掉并退回极短兜底文本。
 2. **`main.py`**：
-   - `rvc_cover` / `svc_cover` / `svcvc_cover` / `smart_cover` 的工具返回值去掉"🎵 正在从【…】…"装饰，改为一句中性短句交给 LLM；
+   - `rvc_cover` / `smart_cover` 的工具返回值去掉"🎵 正在从【…】…"装饰，改为一句中性短句交给 LLM；
    - 风控重试提示改走 `outbound.say(event, "retry", …)`（默认静音）；
    - `_send_progress_notice` 改走 `outbound.say(event, "progress", …)`（默认静音）；
    - 失败强制发送整段错误文本改为 `outbound.say(event, "failed", …)`，技术细节只写日志；
    - `_smart_cover_async` 与批量翻唱的失败判断只认 `❌` / `FAIL:` 明确标记，删掉关键词匹配；
    - 失败路径不再额外触发一次 LLM 说话，避免同一任务两条回复。
-3. **`api.py`**：新增 `_extract_mid()` 修复新版返回结构下 `'str' object has no attribute 'mid'` 的崩溃；删除已无法解析的备选音源接口。
-4. **`_conf_schema.json`**：新增 `notify_progress`、`notify_retry` 两个开关（缺省 `false`）。
-5. **元数据与文档**：`metadata.yaml` 改为本分支的名字/版本/作者/仓库；新增 `CHANGELOG.md` 与 `NOTICE.md`；`README.md` 开头增加"这是自维护分支"一节。README 其余内容沿用上游。
-6. **v0.3.0（2026-10-27）**：删除洛雪（LX-Source）兜底与 `download_via_lx` / `build_lx_url`，只保留网易云官方接口 + cookie；QQ 音源下线，搜歌与取歌都只走网易云。
+3. **`_conf_schema.json`**：新增 `notify_progress`、`notify_retry` 两个开关（缺省 `false`）。
+4. **元数据与文档**：`metadata.yaml` 改为本分支的名字/版本/作者/仓库；新增 `CHANGELOG.md` 与 `NOTICE.md`；`README.md` 按本分支的真实功能另写。
+5. **v0.3.0（2026-10-27）**：删除洛雪（LX-Source）兜底与 `download_via_lx` / `build_lx_url`，只保留网易云官方接口 + cookie；QQ 音源下线，搜歌与取歌都只走网易云。
+6. **v0.7.0（2026-10-27）**：搜歌/取歌改为多音源路由（网易云 → 酷狗 → 酷我 → QQ 音乐，`source_order` 可配），复用点歌插件 `astrbot_plugin_music` 的平台实现与配置。
+7. **v0.9.0（2026-10-27）**：收窄为纯 RVC 插件——删除另外两套推理引擎的命令、工具、配置与代码分支；删除本分支新增过的 `api.py`（旧 QQ / 网易云直连接口，改写后已无人调用）。
+
 
 本分支**不再跟随上游更新**。上游假如更新了同名功能，本分支不会自动合并。

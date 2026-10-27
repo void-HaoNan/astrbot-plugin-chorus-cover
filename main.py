@@ -7,7 +7,6 @@ import time
 import asyncio
 import shutil
 import json
-import secrets
 import sys
 from datetime import datetime
 from typing import Optional, Dict, List, Any, Set
@@ -65,8 +64,8 @@ class _OutboundTarget:
 @register(
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
-    "RVC 副歌翻唱（自维护分支，基于 matsuko_cover 2.13.0，AGPL-3.0）：对话出口统一走模型、失败结果结构化",
-    "0.8.0",
+    "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
+    "0.9.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -77,20 +76,7 @@ class MusicPlugin(Star):
         self.outbound = Outbound(self)
         
         self.rvc_base_url = config.get("rvc_base_url", "http://127.0.0.1:3333/")
-        self.svc_base_url = config.get("svc_base_url", "http://127.0.0.1:9999/")
-        self.svcvc_base_url = config.get("svcvc_base_url", "http://127.0.0.1:6767/")
-        
-        self.default_api = config.get("default_api", "netease_nodejs")
-        self.nodejs_base_url = config.get("nodejs_base_url", "https://163api.qijieya.cn")
-        # 0.7.0：搜歌/取歌用哪个平台由 source_order 决定（默认网易云 → 酷狗 → 酷我 →
-        # QQ 音乐）。下面两个旧开关只为兼容旧配置保留读取，不再影响实际链路。
-        self.enable_qqmusic = bool(config.get("enable_qqmusic", False))
-        self.disable_netease = bool(config.get("disable_netease", False))
-        self.disable_qqmusic = True
-        if self.disable_netease:
-            logger.warning(
-                "disable_netease 已不生效：0.7.0 起想跳过网易云请从 source_order 里删掉 netease"
-            )
+        # 搜歌/取歌用哪个平台由 source_order 决定（默认网易云 → 酷狗 → 酷我 → QQ 音乐）
         self.timeout = config.get("timeout", 60)
         self.selection_ui = CoverSelectionUI(
             buttons=bool(config.get("qq_official_buttons", True)),
@@ -99,15 +85,9 @@ class MusicPlugin(Star):
         )
         
         self.rvc_models_keywords = config.get("rvc_models_keywords", [])
-        self.svc_models_keywords = config.get("svc_models_keywords", [])
-        self.svcvc_models_keywords = config.get("svcvc_models_keywords", [])
-        
         self.enable_rvc = config.get("enable_rvc", True)
-        self.enable_svc = config.get("enable_svc", True)
-        self.enable_svcvc = config.get("enable_svcvc", False)
-        
+
         self.inference_timeout = config.get("inference_timeout", 300)
-        self.llm_tool_timeout = config.get("llm_tool_timeout", 10)
         self.music_api_timeout = max(5, int(config.get("music_api_timeout", 20)))
 
         # === 网易云取歌（0.5.0：照搬点歌插件 astrbot_plugin_music）===
@@ -179,18 +159,6 @@ class MusicPlugin(Star):
         self._netease_cookie_fail_streak = 0
         self._cookie_alert_sent_at = 0.0
         
-        if self.default_api == "netease_nodejs":
-            from .api import NetEaseMusicAPINodeJs
-            self.api = NetEaseMusicAPINodeJs(base_url=self.nodejs_base_url)
-        else:
-            if self.default_api != "netease":
-                logger.warning(
-                    f"default_api={self.default_api} 不是网易云取值，按网易云直连接口处理"
-                )
-            from .api import NetEaseMusicAPI
-            self.api = NetEaseMusicAPI()
-
-        # === 新增配置项 ===
         self.llm_force_mode = config.get("llm_force_mode", False)
         self.enable_smart_cover = config.get("enable_smart_cover", True)
         self.enable_enhanced_context = config.get("enable_enhanced_context", True)
@@ -209,13 +177,11 @@ class MusicPlugin(Star):
         self.enable_task_tracking = config.get("enable_task_tracking", True)
         self.task_timeout_seconds = config.get("task_timeout_seconds", 9000)
         
-        self.default_api_type = config.get("default_api_type", "rvc")
         self.default_model_index = config.get("default_model_index", 1)
         # 插件设置里下拉选的默认 RVC 音色（空串表示不指定，沿用 default_model_index）
         self.rvc_default_model = str(config.get("rvc_default_model", "") or "").strip()
         self.default_key_shift = config.get("default_key_shift", 0)
         self.f0_method = config.get("f0_method", "rmvpe")
-        self.svc_f0_method = config.get("svc_f0_method", "fcpe")
         try:
             self.index_rate = float(config.get("index_rate", "0.75"))
         except (ValueError, TypeError):
@@ -240,54 +206,8 @@ class MusicPlugin(Star):
             seconds = 45
         self.chorus_seconds = max(20, min(180, seconds))
 
-        # === SoulX-Singer SVC Voice Conversion 参数 ===
-        self.svcvc_prompt_vocal_sep = bool(config.get("svcvc_prompt_vocal_sep", False))
-        legacy_target_vocal_sep = bool(config.get("svcvc_target_vocal_sep", True))
-        raw_target_separation = str(config.get("svcvc_target_separation", "") or "").strip().lower()
-        target_separation_aliases = {
-            "soulx": "soulx",
-            "msst": "msst",
-            "none": "none",
-            "off": "none",
-            "关闭": "none",
-            "不分离": "none",
-        }
-        if not raw_target_separation:
-            self.svcvc_target_separation = "soulx" if legacy_target_vocal_sep else "none"
-        else:
-            self.svcvc_target_separation = target_separation_aliases.get(raw_target_separation, "soulx")
-            if raw_target_separation not in target_separation_aliases:
-                logger.warning(
-                    "svcvc_target_separation 配置无效: %s，回退到 soulx",
-                    raw_target_separation,
-                )
-        # 保留旧字段供旧中间层参数兼容；新中间层以字符串分离方式为准。
-        self.svcvc_target_vocal_sep = self.svcvc_target_separation == "soulx"
-        self.svcvc_auto_shift = bool(config.get("svcvc_auto_shift", True))
-        self.svcvc_auto_mix_acc = bool(config.get("svcvc_auto_mix_acc", True))
-        try:
-            self.svcvc_pitch_shift = max(-36, min(36, int(config.get("svcvc_pitch_shift", 0))))
-        except (TypeError, ValueError):
-            logger.warning("svcvc_pitch_shift 配置格式错误，使用默认值 0")
-            self.svcvc_pitch_shift = 0
-        try:
-            self.svcvc_n_step = max(1, min(200, int(config.get("svcvc_n_step", 32))))
-        except (TypeError, ValueError):
-            logger.warning("svcvc_n_step 配置格式错误，使用默认值 32")
-            self.svcvc_n_step = 32
-        try:
-            self.svcvc_cfg = max(0.0, min(10.0, float(config.get("svcvc_cfg", "1.0"))))
-        except (TypeError, ValueError):
-            logger.warning("svcvc_cfg 配置格式错误，使用默认值 1.0")
-            self.svcvc_cfg = 1.0
-        try:
-            self.svcvc_seed = max(0, min(4294967295, int(config.get("svcvc_seed", 42))))
-        except (TypeError, ValueError):
-            logger.warning("svcvc_seed 配置格式错误，使用默认值 42")
-            self.svcvc_seed = 42
-        self.svcvc_random_seed = bool(config.get("svcvc_random_seed", False))
         
-        # === MSST 分离参数（RVCSVC-API-MSST 与 SVCVC-API-SVF 的 MSST 模式）===
+        # === MSST 分离参数（只有声明了 MSST 接口的 RVC 中间层才会用到）===
         # Follow the native recommendation of model_bs_roformer_ep_317_sdr_12.9755.
         # Batch size changes throughput/VRAM, while overlap materially affects
         # separation smoothness.  TTA is optional because it triples inference.
@@ -299,7 +219,7 @@ class MusicPlugin(Star):
             "msst_default_model", "bs_roformer_ep_317_sdr_12.9755"
         )
         
-        # === UVR5 分离参数（仅 RVCSVC-API-amd 后端生效）===
+        # === UVR5 分离参数（只有某些 RVC 中间层会用到）===
         self.uvr5_agg = config.get("uvr5_agg", 10)
         self.uvr5_tta = config.get("uvr5_tta", False)
         self.uvr5_postprocess = config.get("uvr5_postprocess", False)
@@ -352,18 +272,6 @@ class MusicPlugin(Star):
         self._gender_cache: Dict[str, str] = {}
         self._gender_cache_max_size = 100
         
-        # 动态更新 smart_cover 的 docstring，替换可用引擎占位符
-        engines_list = []
-        if self.enable_rvc:
-            engines_list.append("rvc")
-        if self.enable_svc:
-            engines_list.append("svc")
-        if self.enable_svcvc:
-            engines_list.append("svcvc")
-        engines_str = ", ".join(engines_list).upper() if engines_list else "无"
-        raw_doc = getattr(type(self).smart_cover, "__doc__", None)
-        if raw_doc and "{available_engines}" in raw_doc:
-            type(self).smart_cover.__doc__ = raw_doc.replace("{available_engines}", engines_str)
 
     @staticmethod
     def _onebot_response_data(response: Any) -> Dict[str, Any]:
@@ -901,13 +809,6 @@ class MusicPlugin(Star):
         """配置里的音质（128/192/320）换算成接口要的码率。"""
         return int(self.netease_quality) * 1000
 
-    def _resolve_music_source(self, requested: Optional[str] = None) -> str:
-        """实际使用的搜索源：只有网易云。
-
-        不管调用方（命令 / LLM 工具 / 卡片）传什么、配置里 default_api 写成什么，
-        最终都返回 ``netease``。
-        """
-        return "netease"
 
     def _short_failure_reason(self, detail: str) -> str:
         """把技术性失败详情压成一句人话（批量报告用，细节只进日志）。"""
@@ -917,7 +818,7 @@ class MusicPlugin(Star):
         if "超时" in text:
             return "生成超时了"
         if "禁用" in text:
-            return "这个引擎被禁用了"
+            return "RVC 没开"
         if "模型" in text and ("没有可用" in text or "序号" in text):
             return "没有可用的音色"
         if any(word in text for word in ("生成失败", "未返回有效", "没出成品")):
@@ -1026,10 +927,6 @@ class MusicPlugin(Star):
 
     # ==================== 统一取歌入口（0.7.0：多音源路由） ====================
 
-    #: QQ 音乐 mid：字母数字混合。老格式 11~12 位，但现在真实 mid 是 14 位
-    #: （实测 ``0039MnYb0qxYhV`` / ``003YYGKC1DTKmZ`` 都是 14 位），所以按 11~14 位认。
-    #: 纯数字的是网易云 id，别混进来（下面还会再判一次"至少含一个字母"）。
-    _QQ_MID_PATTERN = re.compile(r"^[0-9A-Za-z]{11,14}$")
 
     @staticmethod
     def _song_identity(song: Any) -> tuple[str, str, str]:
@@ -1049,24 +946,6 @@ class MusicPlugin(Star):
         artists = str(song.get("artists") or song.get("artist") or "").strip()
         return raw_id, name, artists
 
-    @classmethod
-    def _looks_like_qq_mid(cls, value: str) -> bool:
-        """11~14 位字母数字且至少含一个字母 → 按 QQ 音乐 mid 处理。"""
-        text = str(value or "").strip()
-        return bool(cls._QQ_MID_PATTERN.match(text)) and any(ch.isalpha() for ch in text)
-
-    def _netease_search_api(self):
-        """拿一个"确定是网易云"的搜索器，返回 ``(api, 是否需要我自己关闭)``。
-
-        0.3.0 起 ``self.api`` 一定是网易云实现，正常情况直接复用；万一被外部
-        换成别的搜索器，就临时建一个网易云搜索器，避免把非网易云 id 当歌曲 id。
-        """
-        api = getattr(self, "api", None)
-        if type(api).__name__ in ("NetEaseMusicAPI", "NetEaseMusicAPINodeJs"):
-            return api, False
-        from .api import NetEaseMusicAPI
-
-        return NetEaseMusicAPI(), True
 
     @staticmethod
     def _pick_best_song(songs: list, query: str, artist: str = "") -> dict:
@@ -1098,7 +977,7 @@ class MusicPlugin(Star):
     async def _prepare_song_audio(
         self, event: AstrMessageEvent, song: Any
     ) -> tuple[Optional[str], str, bool]:
-        """统一取歌入口：把"歌曲对象 / 歌名 / 网易云 id / 旧的 QQ mid"变成本地音频文件。
+        """统一取歌入口：把"歌曲对象 / 歌名 / 歌曲 id"变成本地音频文件。
 
         0.7.0 起所有取歌路径都交给 :class:`source_router.SourceRouter`：
 
@@ -1224,7 +1103,6 @@ class MusicPlugin(Star):
         """获取用户偏好，如果不存在则创建默认值"""
         if user_id not in self.user_preferences:
             self.user_preferences[user_id] = {
-                "default_api_type": self.default_api_type,
                 "default_model_index": max(1, self.default_model_index),
                 "default_key_shift": self.default_key_shift,
                 "favorite_songs": [],
@@ -1379,69 +1257,18 @@ class MusicPlugin(Star):
     async def _predict_cover(
         self,
         event: AstrMessageEvent,
-        api_type: str,
         song_name_src: str,
         model_name: str,
         key_shift: Optional[int],
-    ) -> tuple[Any, bool, Optional[int]]:
-        """Submit one conversion using the parameter contract of the selected engine."""
-        api_type = str(api_type).lower()
-        base_url = self._get_engine_base_url(api_type)
-        effective_seed: Optional[int] = None
-
+    ) -> tuple[Any, bool]:
+        """把一首（或一段）音频提交给 RVC 中间层，等它返回成品路径。"""
+        base_url = self.rvc_base_url
         async with self._get_gradio_client(base_url) as client:
-            if api_type == "svcvc":
-                effective_seed = (
-                    secrets.randbelow(4294967296)
-                    if self.svcvc_random_seed
-                    else self.svcvc_seed
-                )
-                pitch_shift = self._effective_key_shift(api_type, key_shift)
-                svcvc_kwargs = {
-                    "song_name_src": song_name_src,
-                    "model_dropdown": model_name,
-                    "prompt_vocal_sep": self.svcvc_prompt_vocal_sep,
-                    "target_vocal_sep": self.svcvc_target_vocal_sep,
-                    "target_separation": self.svcvc_target_separation,
-                    "auto_shift": self.svcvc_auto_shift,
-                    "auto_mix_acc": self.svcvc_auto_mix_acc,
-                    "pitch_shift": pitch_shift,
-                    "n_step": self.svcvc_n_step,
-                    "cfg": self.svcvc_cfg,
-                    "seed": effective_seed,
-                    "random_seed": self.svcvc_random_seed,
-                }
-                svcvc_kwargs.update(self._get_svcvc_msst_kwargs(client))
-                logger.info(
-                    "[SoulX-SVCVC参数Debug] "
-                    f"profile={model_name} | prompt_sep={self.svcvc_prompt_vocal_sep} | "
-                    f"target_separation={self.svcvc_target_separation} | "
-                    f"auto_shift={self.svcvc_auto_shift} | "
-                    f"auto_mix={self.svcvc_auto_mix_acc} | pitch_shift={pitch_shift} | "
-                    f"n_step={self.svcvc_n_step} | cfg={self.svcvc_cfg} | "
-                    f"seed={effective_seed} | random={self.svcvc_random_seed} | "
-                    f"msst_model={svcvc_kwargs.get('msst_model', 'backend-default')} | "
-                    f"msst_batch={svcvc_kwargs.get('msst_batch_size', 'backend-default')} | "
-                    f"msst_overlap={svcvc_kwargs.get('msst_num_overlap', 'backend-default')} | "
-                    f"msst_normalize={svcvc_kwargs.get('msst_normalize', 'backend-default')} | "
-                    f"msst_tta={svcvc_kwargs.get('msst_use_tta', 'backend-default')}"
-                )
-                result, cache_hit = await self._async_predict(
-                    client,
-                    **svcvc_kwargs,
-                    api_name="/convert",
-                    timeout=self.inference_timeout,
-                    event=event,
-                    detect_cache_hit=True,
-                )
-                return result, cache_hit, effective_seed
-
-            legacy_key_shift = self._effective_key_shift(api_type, key_shift)
             msst_kwargs = await self._get_optional_msst_kwargs(client, base_url)
-            render_kwargs = self._get_render_kwargs(client) if api_type == "rvc" else {}
+            render_kwargs = self._get_render_kwargs(client)
             legacy_kwargs = {
                 "song_name_src": song_name_src,
-                "key_shift": legacy_key_shift,
+                "key_shift": int(key_shift or 0),
                 "vocal_vol": 0,
                 "inst_vol": 0,
                 "model_dropdown": model_name,
@@ -1457,17 +1284,12 @@ class MusicPlugin(Star):
                 "msst_normalize": self.msst_normalize,
                 "vocal_postprocess": self.vocal_postprocess,
                 "shift_accompaniment": self.shift_accompaniment,
+                "f0_method": self.f0_method,
+                "index_rate": self.index_rate,
+                "filter_radius": self.filter_radius,
                 **msst_kwargs,
                 **render_kwargs,
             }
-            if api_type == "svc":
-                legacy_kwargs["svc_f0_method"] = self.svc_f0_method
-            else:
-                legacy_kwargs.update({
-                    "f0_method": self.f0_method,
-                    "index_rate": self.index_rate,
-                    "filter_radius": self.filter_radius,
-                })
             result, cache_hit = await self._async_predict(
                 client,
                 **legacy_kwargs,
@@ -1476,8 +1298,7 @@ class MusicPlugin(Star):
                 event=event,
                 detect_cache_hit=True,
             )
-            return result, cache_hit, None
-
+            return result, cache_hit
     def _get_stage_emoji(self, desc: str) -> str:
         if not desc:
             return "⏳"
@@ -1486,7 +1307,7 @@ class MusicPlugin(Star):
             return "📥"
         elif any(kw in desc_lower for kw in ["分离", "separat", "人声", "vocal", "msst", "bs-roformer", "uvr"]):
             return "🎤"
-        elif any(kw in desc_lower for kw in ["推理", "infer", "rvc", "svc", "模型"]):
+        elif any(kw in desc_lower for kw in ["推理", "infer", "rvc", "模型"]):
             return "🧠"
         elif any(kw in desc_lower for kw in ["混音", "mix", "处理音频", "混响", "reverb", "均衡", "伴奏"]):
             return "🎛️"
@@ -1526,7 +1347,7 @@ class MusicPlugin(Star):
                 task.cancel()
             logger.warning(f"[MatsukoCover] 任务超时已清理: {key}")
 
-    def _register_active_task(self, event: AstrMessageEvent, song_name: str, api_type: str, model_display: str = "") -> bool:
+    def _register_active_task(self, event: AstrMessageEvent, song_name: str, model_display: str = "") -> bool:
         """注册正在进行的翻唱任务"""
         if not self.enable_task_tracking:
             return True
@@ -1536,16 +1357,14 @@ class MusicPlugin(Star):
             return False
         self._active_cover_tasks[key] = {
             "song_name": song_name,
-            "api_type": api_type,
             "model_display": model_display,
             "status": "处理中",
             "start_time": time.time(),
             "asyncio_task": None,
             "gradio_job": None,
         }
-        logger.info(f"[MatsukoCover] 注册翻唱任务: {key} -> 《{song_name}》({api_type})")
+        logger.info(f"[MatsukoCover] 注册翻唱任务: {key} -> 《{song_name}》")
         return True
-
     def _bind_active_asyncio_task(self, event: AstrMessageEvent, task: Optional[asyncio.Task] = None) -> None:
         """把真实 asyncio 任务绑定到会话状态，供取消命令使用。"""
         if not self.enable_task_tracking:
@@ -1640,60 +1459,13 @@ class MusicPlugin(Star):
             logger.error(f"[MatsukoCover] 通知 LLM 失败: {e}")
             return None
 
-    def _get_engine_models(self, api_type: str) -> list:
-        api_type = str(api_type or "").lower()
-        if api_type == "svc":
-            return self.svc_models_keywords
-        if api_type == "svcvc":
-            return self.svcvc_models_keywords
-        return self.rvc_models_keywords
+    def _set_engine_models(self, models: list) -> None:
+        """把刷新拿到的模型列表（含别名）写回内存和插件配置。"""
+        self.rvc_models_keywords = models
+        self.config["rvc_models_keywords"] = models
 
-    def _set_engine_models(self, api_type: str, models: list) -> None:
-        api_type = str(api_type or "").lower()
-        if api_type == "svc":
-            self.svc_models_keywords = models
-            self.config["svc_models_keywords"] = models
-        elif api_type == "svcvc":
-            self.svcvc_models_keywords = models
-            self.config["svcvc_models_keywords"] = models
-        else:
-            self.rvc_models_keywords = models
-            self.config["rvc_models_keywords"] = models
-
-    def _get_engine_base_url(self, api_type: str) -> str:
-        api_type = str(api_type or "").lower()
-        if api_type == "svc":
-            return self.svc_base_url
-        if api_type == "svcvc":
-            return self.svcvc_base_url
-        return self.rvc_base_url
-
-    def _is_engine_enabled(self, api_type: str) -> bool:
-        api_type = str(api_type or "").lower()
-        return {
-            "rvc": self.enable_rvc,
-            "svc": self.enable_svc,
-            "svcvc": self.enable_svcvc,
-        }.get(api_type, False)
-
-    def _get_available_engines(self) -> list[str]:
-        return [name for name in ("rvc", "svc", "svcvc") if self._is_engine_enabled(name)]
-
-    @staticmethod
-    def _engine_display_name(api_type: str) -> str:
-        return "SoulX-SVCVC" if str(api_type).lower() == "svcvc" else str(api_type).upper()
-
-    @staticmethod
-    def _key_shift_range(api_type: str) -> tuple[int, int]:
-        return (-36, 36) if str(api_type).lower() == "svcvc" else (-12, 12)
-
-    def _effective_key_shift(self, api_type: str, key_shift: Optional[int]) -> int:
-        if str(api_type).lower() == "svcvc" and key_shift is None:
-            return self.svcvc_pitch_shift
-        return int(key_shift or 0)
-
-    def get_models_display_list(self, api_type="rvc"):
-        models_keywords = self._get_engine_models(api_type)
+    def get_models_display_list(self):
+        models_keywords = self.rvc_models_keywords
         display_names, key_list = [], []
         for index, item_str in enumerate(models_keywords, start=1):
             parts = item_str.split(MODEL_ALIAS_SEPARATOR, 1)
@@ -1716,9 +1488,8 @@ class MusicPlugin(Star):
             size /= 1024
         return f"{size:.1f} TiB"
 
-    async def _backend_cache_request(self, api_type: str, clear: bool = False) -> Any:
-        base_url = self._get_engine_base_url(api_type)
-        async with self._get_gradio_client(base_url) as client:
+    async def _backend_cache_request(self, clear: bool = False) -> Any:
+        async with self._get_gradio_client(self.rvc_base_url) as client:
             if clear:
                 return await self._async_predict(
                     client, scope="all", api_name="/clear_cache", timeout=60
@@ -1729,23 +1500,17 @@ class MusicPlugin(Star):
 
     @staticmethod
     def _parse_cache_target(message: str) -> list[str]:
+        """缓存命令只认 RVC 一个后端；传别的词返回空列表，让调用方提示用法。"""
         normalized = str(message or "").strip().lower()
         for command in ("查看翻唱缓存", "清理翻唱缓存"):
             normalized = re.sub(rf"^/?{command}\s*", "", normalized).strip()
-        aliases = {
-            "rvc": ["rvc"],
-            "svc": ["svc"],
-            "svcvc": ["svcvc"],
-            "soulx": ["svcvc"],
-            "all": ["rvc", "svc", "svcvc"],
-            "全部": ["rvc", "svc", "svcvc"],
-            "": ["rvc", "svc", "svcvc"],
-        }
-        return aliases.get(normalized, [])
+        if normalized in ("", "rvc", "all", "全部"):
+            return ["rvc"]
+        return []
 
-    def get_models_detailed_list(self, api_type="rvc"):
+    def get_models_detailed_list(self):
         """获取包含完整信息的模型列表（用于LLM匹配）"""
-        models_keywords = self._get_engine_models(api_type)
+        models_keywords = self.rvc_models_keywords
         detailed_info = []
         for index, item_str in enumerate(models_keywords, start=1):
             parts = item_str.split(MODEL_ALIAS_SEPARATOR, 1)
@@ -1761,27 +1526,27 @@ class MusicPlugin(Star):
             })
         return detailed_info
 
-    def _find_model_index_by_name(self, model_name_input: str, api_type: str = "rvc") -> Optional[int]:
+    def _find_model_index_by_name(self, model_name_input: str) -> Optional[int]:
         """根据模型名称或别名查找模型序号（支持模糊匹配）"""
         if not model_name_input:
             return None
-        
-        models = self.get_models_detailed_list(api_type)
+
+        models = self.get_models_detailed_list()
         input_lower = model_name_input.lower().strip()
-        
+
         exact_matches = []
         partial_matches = []
-        
+
         for model in models:
             filename_lower = model["filename"].lower()
             name_lower = model["name"].lower()
             alias_lower = model["alias"].lower()
-            
+
             if input_lower == filename_lower or input_lower == name_lower or (alias_lower and input_lower == alias_lower):
                 exact_matches.append(model)
             elif input_lower in filename_lower or input_lower in name_lower or (alias_lower and input_lower in alias_lower):
                 partial_matches.append(model)
-        
+
         if exact_matches:
             return exact_matches[0]["index"]
         elif partial_matches:
@@ -1790,23 +1555,21 @@ class MusicPlugin(Star):
                 len(m["alias"]) if m["alias"] and input_lower in m["alias"] else 0
             ))
             return best_match["index"]
-        
+
         return None
 
-    def _configured_rvc_model_index(self, api_type: str = "rvc") -> Optional[int]:
+    def _configured_rvc_model_index(self) -> Optional[int]:
         """把配置里下拉选的 rvc_default_model 换成当前 RVC 模型列表里的序号。
 
-        只在调用方确认「用户没有显式指定模型名或序号」之后调用，且只对 RVC 生效。
+        只在调用方确认「用户没有显式指定模型名或序号」之后调用。
         下拉选的模型不在当前列表里（还没 /刷新rvc模型、模型被删了）时返回 None，
         调用方回落到 default_model_index / 偏好序号；这里只记一条 warning。
         """
-        if str(api_type or "").lower() != "rvc":
-            return None
         configured = str(getattr(self, "rvc_default_model", "") or "").strip()
         if not configured:
             return None
         target = configured.lower()
-        for model in self.get_models_detailed_list("rvc"):
+        for model in self.get_models_detailed_list():
             if target in (model["filename"].lower(), model["name"].lower(), model["alias"].lower()):
                 return model["index"]
         logger.warning(
@@ -2122,64 +1885,34 @@ class MusicPlugin(Star):
 
         return final_shift
 
-    async def _update_models_from_api(self, api_type="rvc"):
-        base_url = self._get_engine_base_url(api_type)
-        profile_display_names: Dict[str, str] = {}
+    async def _update_models_from_api(self):
+        """从 RVC 后端拉一遍模型列表，保留已配的别名后写回插件配置。"""
+        base_url = self.rvc_base_url
         async with self._get_gradio_client(base_url) as client:
             try:
                 model_list_from_api = await self._async_predict(client, api_name="/show_model")
             except Exception as e:
                 logger.warning(f"第一次获取模型列表失败，重试中: {e}")
                 model_list_from_api = await self._async_predict(client, api_name="/show_model")
-            if api_type == "svcvc":
-                try:
-                    profile_details = await self._async_predict(
-                        client, api_name="/list_voice_profiles"
-                    )
-                    if isinstance(profile_details, list):
-                        for profile in profile_details:
-                            if not isinstance(profile, dict):
-                                continue
-                            profile_id = str(
-                                profile.get("profile_id") or profile.get("id") or ""
-                            ).strip()
-                            display_name = str(
-                                profile.get("display_name") or profile.get("name") or ""
-                            ).strip()
-                            if profile_id and display_name and display_name != profile_id:
-                                profile_display_names[profile_id] = display_name
-                    logger.info(
-                        "[SVCVC音色列表Debug] 插件获取音色详情: "
-                        f"{profile_display_names or '(无自定义显示名)'}"
-                    )
-                except Exception as exc:
-                    logger.info(
-                        f"[SVCVC音色列表Debug] 后端未提供音色详情，继续使用 ID: {exc}"
-                    )
 
         if not isinstance(model_list_from_api, list):
             raise ValueError(f"获取模型列表失败: {model_list_from_api}")
 
-        current_config_list = self._get_engine_models(api_type)
         old_aliases = {}
-        for item_str in current_config_list:
+        for item_str in self.rvc_models_keywords:
             parts = item_str.split(MODEL_ALIAS_SEPARATOR, 1)
             if len(parts) > 1:
                 old_aliases[parts[0]] = parts[1]
 
         new_models_list = [
-            f"{m}{MODEL_ALIAS_SEPARATOR}"
-            f"{old_aliases.get(m, '') or profile_display_names.get(m, '')}"
+            f"{m}{MODEL_ALIAS_SEPARATOR}{old_aliases.get(m, '') or ''}"
             for m in model_list_from_api
         ]
-        
-        self._set_engine_models(api_type, new_models_list)
-        
+
+        self._set_engine_models(new_models_list)
+
         self.config.save_config()
-        logger.info(
-            f"{self._engine_display_name(api_type)} 模型/音色列表已更新并成功保存，"
-            f"共 {len(new_models_list)} 个"
-        )
+        logger.info(f"RVC 模型列表已更新并成功保存，共 {len(new_models_list)} 个")
 
     @staticmethod
     def _client_supports_api(client, api_name: str) -> Optional[bool]:
@@ -2239,32 +1972,6 @@ class MusicPlugin(Star):
             values["chorus_seconds"] = self.chorus_seconds
         return values
 
-    def _get_svcvc_msst_kwargs(self, client) -> Dict[str, Any]:
-        """Send request-level MSST settings only to a compatible SVCVC backend."""
-        if self.svcvc_target_separation != "msst":
-            return {}
-        values = {
-            "msst_model": self.msst_default_model,
-            "msst_batch_size": self.msst_batch_size,
-            "msst_num_overlap": self.msst_num_overlap,
-            "msst_normalize": self.msst_normalize,
-            "msst_use_tta": self.msst_use_tta,
-        }
-        parameter_names = self._client_api_parameter_names(client, "/convert")
-        if parameter_names is None:
-            logger.warning(
-                "无法读取 SVCVC /convert 参数列表；为兼容旧后端，本次不提交插件 MSST 参数"
-            )
-            return {}
-        missing = sorted(set(values) - parameter_names)
-        if missing:
-            logger.warning(
-                "SVCVC-API-SVF 版本过旧，/convert 缺少 MSST 参数 %s；"
-                "本次沿用后端 config.json",
-                ", ".join(missing),
-            )
-            return {}
-        return values
 
     async def _get_msst_models_from_client(self, client) -> List[Dict[str, str]]:
         result = await self._async_predict(
@@ -2295,7 +2002,7 @@ class MusicPlugin(Star):
                 "msst_use_tta": self.msst_use_tta,
             }
         if supports is False:
-            logger.info(f"后端 {base_url} 未提供 MSST 模型接口，按 RVCSVC-API-amd 兼容模式调用")
+            logger.info(f"后端 {base_url} 没有 MSST 模型接口，本次不提交 MSST 参数")
             return {}
 
         try:
@@ -2309,173 +2016,91 @@ class MusicPlugin(Star):
             return {}
 
     async def _get_msst_models_from_api(self) -> List[Dict[str, str]]:
-        """读取 MSST 后端公开的分离模型白名单。"""
-        errors = []
-        urls = []
-        for base_url in (self.rvc_base_url, self.svc_base_url):
-            if base_url and base_url not in urls:
-                urls.append(base_url)
-
-        for base_url in urls:
-            try:
-                async with self._get_gradio_client(base_url) as client:
-                    supports = self._client_supports_api(client, "/show_msst_models")
-                    if supports is False:
-                        raise RuntimeError("当前是 RVCSVC-API-amd 或其他非 MSST 后端")
-                    models = await self._get_msst_models_from_client(client)
-                    model_ids = ", ".join(item["id"] for item in models)
-                    logger.info(
-                        f"[MSST模型列表Debug] 插件已从 {base_url} 获取 "
-                        f"{len(models)} 个模型: {model_ids}"
-                    )
-                    return models
-            except Exception as exc:
-                errors.append(f"{base_url}: {exc}")
-
-        raise RuntimeError(
-            "当前配置的后端不支持 MSST 模型列表，或 MSST 服务尚未启动。"
-            + (f" 详情：{'；'.join(errors)}" if errors else "")
-        )
-
-    async def _sync_msst_model_selection(self, model_id: str) -> Optional[str]:
-        """Notify one active MSST backend so it can emit an immediate switch debug line."""
-        urls = []
-        for base_url in (self.rvc_base_url, self.svc_base_url):
-            if base_url and base_url not in urls:
-                urls.append(base_url)
-
-        for base_url in urls:
-            try:
-                async with self._get_gradio_client(base_url) as client:
-                    supports = self._client_supports_api(client, "/select_msst_model")
-                    if supports is False:
-                        continue
-                    result = await self._async_predict(
-                        client,
-                        model_name=model_id,
-                        api_name="/select_msst_model",
-                        timeout=30,
-                    )
-                    if isinstance(result, dict) and result.get("success"):
-                        logger.info(
-                            f"[MSST模型切换Debug] 中间层 {base_url} 已确认切换为 {model_id}"
-                        )
-                        return base_url
-            except Exception as exc:
-                logger.debug(f"同步 MSST 模型到后端 {base_url} 失败，已忽略: {exc}")
-        return None
-
-    async def _get_svcvc_msst_models_from_api(self) -> List[Dict[str, Any]]:
-        """读取 SVCVC-API-SVF 内置 MSST 模型及当前选择。"""
-        async with self._get_gradio_client(self.svcvc_base_url) as client:
+        """读取 RVC 后端公开的 MSST 分离模型白名单。"""
+        base_url = self.rvc_base_url
+        async with self._get_gradio_client(base_url) as client:
             supports = self._client_supports_api(client, "/show_msst_models")
             if supports is False:
-                raise RuntimeError("SVCVC-API-SVF 版本过旧，未提供 MSST 模型列表接口")
-            result = await self._async_predict(
-                client,
-                api_name="/show_msst_models",
-                timeout=30,
-            )
-        if not isinstance(result, list):
-            raise ValueError(f"SVCVC 后端返回格式错误: {result!r}")
-
-        models: List[Dict[str, Any]] = []
-        for item in result:
-            if isinstance(item, dict) and item.get("id"):
-                models.append(
-                    {
-                        "id": str(item["id"]),
-                        "name": str(item.get("name") or item["id"]),
-                        "current": bool(item.get("current")),
-                    }
-                )
-            elif isinstance(item, str):
-                models.append({"id": item, "name": item, "current": False})
-        if not models:
-            raise ValueError("SVCVC 后端没有发现已安装的 MSST 模型")
+                raise RuntimeError("当前 RVC 后端没有 MSST 模型列表接口")
+            models = await self._get_msst_models_from_client(client)
         logger.info(
-            "[SVCVC MSST模型列表Debug] 插件从 %s 获取 %d 个模型: %s",
-            self.svcvc_base_url,
-            len(models),
-            ", ".join(item["id"] for item in models),
+            f"[MSST模型列表Debug] 插件已从 {base_url} 获取 "
+            f"{len(models)} 个模型: {', '.join(item['id'] for item in models)}"
         )
         return models
 
-    async def _select_svcvc_msst_model(self, model_id: str) -> Dict[str, Any]:
-        """切换 SVCVC-API-SVF 内置 MSST 模型并确认后端已持久化。"""
-        async with self._get_gradio_client(self.svcvc_base_url) as client:
-            supports = self._client_supports_api(client, "/select_msst_model")
-            if supports is False:
-                raise RuntimeError("SVCVC-API-SVF 版本过旧，未提供 MSST 模型切换接口")
-            result = await self._async_predict(
-                client,
-                model_name=model_id,
-                api_name="/select_msst_model",
-                timeout=30,
-            )
-        if not isinstance(result, dict) or not result.get("success"):
-            raise RuntimeError(f"SVCVC 后端未确认模型切换: {result!r}")
-        logger.info(
-            "[SVCVC MSST模型切换Debug] 中间层 %s 已切换并保存为 %s",
-            self.svcvc_base_url,
-            result.get("id") or model_id,
-        )
-        return result
+    async def _sync_msst_model_selection(self, model_id: str) -> Optional[str]:
+        """通知 RVC 中间层切换分离模型，返回确认的地址（没确认就给 None）。"""
+        base_url = self.rvc_base_url
+        try:
+            async with self._get_gradio_client(base_url) as client:
+                supports = self._client_supports_api(client, "/select_msst_model")
+                if supports is False:
+                    return None
+                result = await self._async_predict(
+                    client,
+                    model_name=model_id,
+                    api_name="/select_msst_model",
+                    timeout=30,
+                )
+                if isinstance(result, dict) and result.get("success"):
+                    logger.info(
+                        f"[MSST模型切换Debug] 中间层 {base_url} 已确认切换为 {model_id}"
+                    )
+                    return base_url
+        except Exception as exc:
+            logger.debug(f"同步 MSST 模型到后端 {base_url} 失败，已忽略: {exc}")
+        return None
 
     # ==================== 命令处理（支持LLM强制模式） ====================
 
     @filter.command("翻唱帮助")
     async def cover_help(self, event: AstrMessageEvent):
-        """Show entry points and read-only shortcuts for the cover workflow.
+        """Show the RVC-only entry points for the cover workflow.
 
         Args:
             event: Message requesting the help card.
         """
         await self.selection_ui.send_card(
             event,
-            "🎵 松子翻唱",
-            "网易云音乐：/rvc、/svc、/svcvc <歌名> [升降调]\n"
-            "QQ 音乐已下线，只会用网易云取歌\n"
+            "🎵 RVC 翻唱",
+            "翻唱：/rvc <歌名> [升降调]\n"
             "本地音频：发送音频后使用 /本地翻唱\n\n"
-            "点歌后依次选择歌曲和音色，翻唱完成后发送音频。\n"
+            "取歌按插件配置的 source_order 依次试\n"
+            "网易云 → 酷狗 → 酷我 → QQ 音乐。\n"
+            "点歌后依次选择歌曲和音色，翻唱完成后发送音频；\n"
             "选择菜单支持按钮、序号、翻页和取消。\n"
-            "已禁用的引擎或音乐来源以插件配置为准。\n"
             "LLM 强制模式下，请直接说“帮我翻唱《歌名》”。",
             actions=[
                 ("RVC 音色", "刷新rvc模型"),
-                ("SVC 音色", "刷新svc模型"),
-                ("SoulX 音色", "刷新svcvc音色"),
+                ("分离模型", "列出msst模型"),
                 ("翻唱任务", "查看翻唱任务"),
                 ("我的统计", "我的翻唱统计"),
             ],
         )
-
     @filter.command("查看翻唱缓存")
     async def show_cover_cache(self, event: AstrMessageEvent):
-        """查看各中间层当前缓存占用。"""
-        targets = self._parse_cache_target(event.message_str)
-        if not targets:
-            yield event.plain_result("用法：/查看翻唱缓存 [all|rvc|svc|svcvc]")
+        """查看 RVC 中间层当前缓存占用。"""
+        if not self._parse_cache_target(event.message_str):
+            yield event.plain_result("用法：/查看翻唱缓存")
             return
         yield event.plain_result("🔎 正在读取中间层缓存状态，请稍候...")
         lines = []
-        for api_type in targets:
-            label = self._engine_display_name(api_type)
-            try:
-                info = await self._backend_cache_request(api_type, clear=False)
-                if not isinstance(info, dict):
-                    raise RuntimeError(f"后端返回了无法识别的数据: {info!r}")
+        try:
+            info = await self._backend_cache_request(clear=False)
+            if not isinstance(info, dict):
+                raise RuntimeError(f"后端返回了无法识别的数据: {info!r}")
+            lines.append(
+                f"RVC: {int(info.get('total_files', 0))} 个文件 / "
+                f"{self._format_cache_bytes(info.get('total_bytes', 0))}"
+            )
+            for area, stats in (info.get("areas") or {}).items():
                 lines.append(
-                    f"{label}: {int(info.get('total_files', 0))} 个文件 / "
-                    f"{self._format_cache_bytes(info.get('total_bytes', 0))}"
+                    f"  - {area}: {int(stats.get('files', 0))} 个 / "
+                    f"{self._format_cache_bytes(stats.get('bytes', 0))}"
                 )
-                for area, stats in (info.get("areas") or {}).items():
-                    lines.append(
-                        f"  - {area}: {int(stats.get('files', 0))} 个 / "
-                        f"{self._format_cache_bytes(stats.get('bytes', 0))}"
-                    )
-            except Exception as exc:
-                lines.append(f"{label}: 无法读取（{exc}）")
+        except Exception as exc:
+            lines.append(f"RVC: 无法读取（{exc}）")
         await self.selection_ui.send_card(
             event, "📦 翻唱缓存", "📦 翻唱缓存状态：\n" + "\n".join(lines)
         )
@@ -2483,32 +2108,28 @@ class MusicPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("清理翻唱缓存")
     async def clear_cover_cache(self, event: AstrMessageEvent):
-        """清理选定中间层的结果、分离和下载缓存。"""
-        targets = self._parse_cache_target(event.message_str)
-        if not targets:
-            yield event.plain_result("用法：/清理翻唱缓存 [all|rvc|svc|svcvc]")
+        """清理 RVC 中间层的结果、分离和下载缓存。"""
+        if not self._parse_cache_target(event.message_str):
+            yield event.plain_result("用法：/清理翻唱缓存")
             return
         yield event.plain_result("🧹 正在安全清理中间层缓存，请稍候...")
         lines = []
-        for api_type in targets:
-            label = self._engine_display_name(api_type)
-            try:
-                result = await self._backend_cache_request(api_type, clear=True)
-                if not isinstance(result, dict):
-                    raise RuntimeError(f"后端返回了无法识别的数据: {result!r}")
-                lines.append(
-                    f"{label}: 删除 {int(result.get('deleted_files', 0))} 个文件，"
-                    f"释放 {self._format_cache_bytes(result.get('freed_bytes', 0))}"
-                )
-            except Exception as exc:
-                lines.append(f"{label}: 清理失败（{exc}）")
+        try:
+            result = await self._backend_cache_request(clear=True)
+            if not isinstance(result, dict):
+                raise RuntimeError(f"后端返回了无法识别的数据: {result!r}")
+            lines.append(
+                f"RVC: 删除 {int(result.get('deleted_files', 0))} 个文件，"
+                f"释放 {self._format_cache_bytes(result.get('freed_bytes', 0))}"
+            )
+        except Exception as exc:
+            lines.append(f"RVC: 清理失败（{exc}）")
         await self.selection_ui.send_card(
             event, "🧹 缓存清理结果", "✅ 缓存清理完成：\n" + "\n".join(lines)
         )
-
     @filter.command("列出msst模型")
     async def list_msst_models(self, event: AstrMessageEvent):
-        """列出当前 RVCSVC-API-MSST 后端安装的分离模型。"""
+        """列出当前 RVC 中间层安装的人声分离模型。"""
         yield event.plain_result("🔄 正在读取 MSST 模型列表，请稍候...")
         try:
             models = await self._get_msst_models_from_api()
@@ -2532,7 +2153,7 @@ class MusicPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("切换msst模型")
     async def switch_msst_model(self, event: AstrMessageEvent):
-        """查看或切换 RVCSVC-API-MSST 的默认人声分离模型。"""
+        """查看或切换 RVC 中间层的默认人声分离模型。"""
         raw = event.message_str.strip()
         requested = re.sub(r"^/?切换msst模型\s*", "", raw, flags=re.IGNORECASE).strip()
 
@@ -2596,114 +2217,13 @@ class MusicPlugin(Star):
             "之后的新翻唱任务会使用该模型；已有缓存会按模型分别保存。" + sync_text,
         )
 
-    @filter.command("列出svcvc分离模型")
-    async def list_svcvc_msst_models(self, event: AstrMessageEvent):
-        """列出 SVCVC-API-SVF 内置的 MSST 人声分离模型。"""
-        yield event.plain_result("🔄 正在读取 SVCVC 分离模型列表，请稍候...")
-        try:
-            models = await self._get_svcvc_msst_models_from_api()
-        except Exception as exc:
-            logger.error(f"获取 SVCVC 分离模型列表失败: {exc}")
-            yield event.plain_result(f"❌ 无法读取 SVCVC 分离模型列表：{exc}")
-            return
-
-        lines = [
-            f"{index}. {item['name']}\n   {item['id']}"
-            + ("  ← 当前使用" if item.get("current") else "")
-            for index, item in enumerate(models, 1)
-        ]
-        await self.selection_ui.send_card(
-            event,
-            "🎛️ SoulX 分离模型",
-            "SVCVC-API-SVF 可用的 MSST 人声分离模型：\n"
-            + "\n".join(lines)
-            + "\n\n管理员可使用：/切换svcvc分离模型 <序号或模型名>",
-        )
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("切换svcvc分离模型")
-    async def switch_svcvc_msst_model(self, event: AstrMessageEvent):
-        """切换并持久化 SVCVC-API-SVF 的 MSST 人声分离模型。"""
-        raw = event.message_str.strip()
-        requested = re.sub(
-            r"^/?切换svcvc分离模型\s*",
-            "",
-            raw,
-            flags=re.IGNORECASE,
-        ).strip()
-        yield event.plain_result("🔄 正在读取 SVCVC 分离模型列表，请稍候...")
-        try:
-            models = await self._get_svcvc_msst_models_from_api()
-        except Exception as exc:
-            logger.error(f"获取 SVCVC 分离模型列表失败: {exc}")
-            yield event.plain_result(f"❌ 无法读取 SVCVC 分离模型列表：{exc}")
-            return
-
-        lines = [
-            f"{index}. {item['name']}\n   {item['id']}"
-            + ("  ← 当前使用" if item.get("current") else "")
-            for index, item in enumerate(models, 1)
-        ]
-        if not requested:
-            yield event.plain_result(
-                "可用的 SVCVC 分离模型：\n"
-                + "\n".join(lines)
-                + "\n\n用法：/切换svcvc分离模型 <序号或模型名>"
-            )
-            return
-
-        selected = None
-        if requested.isdigit():
-            model_index = int(requested) - 1
-            if 0 <= model_index < len(models):
-                selected = models[model_index]
-        else:
-            lowered = requested.lower()
-            exact = [
-                item
-                for item in models
-                if lowered in (item["id"].lower(), item["name"].lower())
-            ]
-            partial = [
-                item
-                for item in models
-                if lowered in item["id"].lower() or lowered in item["name"].lower()
-            ]
-            candidates = exact or partial
-            if len(candidates) == 1:
-                selected = candidates[0]
-        if selected is None:
-            yield event.plain_result(
-                f"❌ 没有唯一匹配的 SVCVC 分离模型：{requested}\n\n"
-                + "\n".join(lines)
-            )
-            return
-
-        try:
-            result = await self._select_svcvc_msst_model(selected["id"])
-        except Exception as exc:
-            logger.error(f"切换 SVCVC 分离模型失败: {exc}")
-            yield event.plain_result(f"❌ SVCVC 分离模型切换失败：{exc}")
-            return
-        selected_id = str(result.get("id") or selected["id"])
-        self.msst_default_model = selected_id
-        self.config["msst_default_model"] = selected_id
-        self.config.save_config()
-        await self.selection_ui.send_card(
-            event,
-            "✅ SoulX 分离模型设置",
-            f"✅ SVCVC 分离模型已切换为：{result.get('name') or selected['name']}\n"
-            f"模型 ID：{result.get('id') or selected['id']}\n"
-            "中间层与插件配置均已同步；之后的新任务会使用该模型，分离缓存按模型隔离。",
-        )
-
     @filter.command("刷新rvc模型")
     async def refresh_rvc_models(self, event: AstrMessageEvent):
         yield event.plain_result("正在刷新 RVC 模型列表，请稍候...")
         try:
-            await self._update_models_from_api(api_type="rvc")
+            await self._update_models_from_api()
             yield event.plain_result("刷新成功！")
-            display_str, _ = self.get_models_display_list(api_type="rvc")
+            display_str, _ = self.get_models_display_list()
             display_str = display_str or "未发现任何模型。"
             await self.selection_ui.send_list(event, f"当前 RVC 可用模型：\n{display_str}")
         except Exception as e:
@@ -2732,96 +2252,7 @@ class MusicPlugin(Star):
         if self.llm_force_mode:
             yield event.plain_result("当前已开启 LLM 强制模式，/rvc 命令已被禁用。\n请直接对我说'翻唱《歌名》'，我会自动帮您处理！")
             return
-        async for result in self._handle_cover(event, api_type="rvc"):
-            yield result
-
-    @filter.command("刷新svc模型")
-    async def refresh_svc_models(self, event: AstrMessageEvent):
-        yield event.plain_result("正在刷新 SVC 模型列表，请稍候...")
-        try:
-            await self._update_models_from_api(api_type="svc")
-            yield event.plain_result("刷新成功！")
-            display_str, _ = self.get_models_display_list(api_type="svc")
-            display_str = display_str or "未发现任何模型。"
-            await self.selection_ui.send_list(event, f"当前 SVC 可用模型：\n{display_str}")
-        except Exception as e:
-            logger.error(traceback.format_exc())
-            yield event.plain_result(f"刷新 SVC 模型出错了: {e}")
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("设置svc后端链接")
-    async def set_svc_url(self, event: AstrMessageEvent):
-        args = event.message_str.replace("设置svc后端链接", "").strip().split()
-        if not args:
-            yield event.plain_result(f"当前 SVC 后端: {self.svc_base_url}\n用法: /设置svc后端链接 <URL>")
-            return
-        _url = args[0]
-        if not _url.endswith("/"): _url += "/"
-        self.svc_base_url = _url
-        self.config["svc_base_url"] = _url
-        self.config.save_config()
-        yield event.plain_result(f"SVC 后端链接已设置为: {_url}")
-
-    @filter.command("svc")
-    async def svc(self, event: AstrMessageEvent):
-        if not self.enable_svc:
-            yield event.plain_result("❌ SVC 功能已在配置中禁用。如需使用请在插件配置中设置 enable_svc 为 true。")
-            return
-        if self.llm_force_mode:
-            yield event.plain_result("当前已开启 LLM 强制模式，/svc 命令已被禁用。\n请直接对我说'翻唱《歌名》'，我会自动帮您处理！")
-            return
-        async for result in self._handle_cover(event, api_type="svc"):
-            yield result
-
-    @filter.command("刷新svcvc音色")
-    async def refresh_svcvc_profiles(self, event: AstrMessageEvent):
-        yield event.plain_result("🔄 正在读取 SoulX-SVCVC 参考音色列表，请稍候...")
-        try:
-            await self._update_models_from_api(api_type="svcvc")
-            display_str, _ = self.get_models_display_list(api_type="svcvc")
-            display_str = display_str or "未发现任何参考音色。"
-            await self.selection_ui.send_list(event, f"当前 SoulX-SVCVC 可用参考音色：\n{display_str}")
-        except Exception as e:
-            logger.error(traceback.format_exc())
-            yield event.plain_result(f"读取 SoulX-SVCVC 参考音色失败：{e}")
-
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    @filter.command("设置svcvc后端链接")
-    async def set_svcvc_url(self, event: AstrMessageEvent):
-        args = event.message_str.replace("设置svcvc后端链接", "").strip().split()
-        if not args:
-            yield event.plain_result(
-                f"当前 SoulX-SVCVC 中间层：{self.svcvc_base_url}\n"
-                "用法：/设置svcvc后端链接 <URL>"
-            )
-            return
-        new_url = args[0]
-        if not new_url.endswith("/"):
-            new_url += "/"
-        self.svcvc_base_url = new_url
-        self.config["svcvc_base_url"] = new_url
-        self.config.save_config()
-        yield event.plain_result(f"SoulX-SVCVC 中间层链接已设置为：{new_url}")
-
-    @filter.command("svcvc")
-    async def svcvc(self, event: AstrMessageEvent):
-        if not self.enable_svcvc:
-            yield event.plain_result(
-                "❌ SoulX-SVCVC 已在配置中禁用，请开启 enable_svcvc。"
-            )
-            return
-        if self.llm_force_mode:
-            yield event.plain_result(
-                "当前已开启 LLM 强制模式，/svcvc 命令已禁用。"
-                "请直接对松子说“用 SoulX 参考音色翻唱《歌名》”。"
-            )
-            return
-        if self.disable_netease:
-            yield event.plain_result(
-                "网易云点歌功能已禁用，请使用 /qqsvcvc <歌名>。"
-            )
-            return
-        async for result in self._handle_cover(event, api_type="svcvc"):
+        async for result in self._handle_cover(event):
             yield result
 
     @filter.command("本地翻唱")
@@ -2829,67 +2260,61 @@ class MusicPlugin(Star):
         if not self.enable_local_audio_cover:
             yield event.plain_result("❌ 本地音频翻唱功能未启用。")
             return
-        
+
         audio_path = await self._extract_audio_from_event(event)
-        
+
         if not audio_path:
             await self._cleanup_expired_audio_cache()
             cached = self._recent_audio_cache.get(str(event.unified_msg_origin))
             if cached and os.path.exists(cached[0]):
                 audio_path = cached[0]
-        
+
         if not audio_path:
-            yield event.plain_result("❌ 未检测到音频文件或语音消息。\n\n用法：\n1. 在同一条消息中发送音频+文字 /本地翻唱\n2. 先发送语音/音频，然后在5分钟内发送 /本地翻唱\n\n可选参数：[模型名/序号] [rvc/svc/svcvc] [升降调]\n示例：/本地翻唱 官方示例音色 svcvc 0")
+            yield event.plain_result(
+                "❌ 未检测到音频文件或语音消息。\n\n用法：\n"
+                "1. 在同一条消息中发送音频+文字 /本地翻唱\n"
+                "2. 先发送语音/音频，然后在5分钟内发送 /本地翻唱\n\n"
+                "可选参数：[模型名/序号] [升降调]\n"
+                "示例：/本地翻唱 官方示例音色 0"
+            )
             return
-        
+
         args = event.message_str.replace("本地翻唱", "").strip().split()
         model_name = None
-        api_type = self.default_api_type
         key_shift = self.default_key_shift
-        key_shift_specified = False
-        
+
         for arg in args:
-            if arg.lstrip('-').isdigit() and -36 <= int(arg) <= 36:
+            if arg.lstrip('-').isdigit() and -12 <= int(arg) <= 12:
                 key_shift = int(arg)
-                key_shift_specified = True
-            elif arg.lower() in ("rvc", "svc", "svcvc"):
-                api_type = arg.lower()
             elif len(arg) >= 1:
                 model_name = arg
 
-        if api_type == "svcvc" and not key_shift_specified:
-            key_shift = None
-        
-        if not self._is_engine_enabled(api_type):
-            available = ", ".join(self._get_available_engines()).upper() or "无"
-            yield event.plain_result(
-                f"❌ {self._engine_display_name(api_type)} 功能已禁用。当前可用引擎：{available}"
-            )
-            return
-        
-        await self._execute_local_cover(event, audio_path, model_name, api_type=api_type, key_shift=key_shift)
+        await self._execute_local_cover(
+            event, audio_path, model_name, key_shift=key_shift
+        )
 
-    async def _handle_cover(self, event: AstrMessageEvent, api_type="rvc"):
-        cmd = api_type
-        args = event.message_str.replace(cmd, "").strip().split()
+
+    async def _handle_cover(self, event: AstrMessageEvent):
+        args = re.sub(
+            r"^/?rvc\s*", "", str(event.message_str or "").strip(), flags=re.IGNORECASE
+        ).strip().split()
 
         if not args:
             await self.selection_ui.send_card(
                 event,
-                f"🎵 {self._engine_display_name(api_type)} 翻唱",
-                f"用法：/{cmd} <歌名> [升降调]\n"
-                f"示例：/{cmd} 优しい詩。\n\n"
-                "输入歌名后，按卡片选择歌曲，再选择模型或参考音色。\n"
+                "🎵 RVC 翻唱",
+                "用法：/rvc <歌名> [升降调]\n"
+                "示例：/rvc 优しい詩。\n\n"
+                "输入歌名后，按卡片选择歌曲，再选择音色。\n"
                 "发送 /翻唱帮助 查看所有入口。",
             )
             return
 
-        key_shift, song_name = (None if api_type == "svcvc" else 0), " ".join(args)
+        key_shift, song_name = 0, " ".join(args)
         if args and args[-1].lstrip("-").isdigit():
             try:
                 val = int(args[-1])
-                min_shift, max_shift = self._key_shift_range(api_type)
-                if min_shift <= val <= max_shift:
+                if -12 <= val <= 12:
                     key_shift = val
                     song_name = " ".join(args[:-1]) if len(args) > 1 else ""
             except ValueError:
@@ -2937,7 +2362,7 @@ class MusicPlugin(Star):
         try:
             selected_song_index, event = await self.selection_ui.choose(
                 event,
-                f"🎵 {self._engine_display_name(api_type)} · 选择歌曲\n来源：{source_display}",
+                f"🎵 RVC · 选择歌曲\n来源：{source_display}",
                 [menu_label(song) for song in songs],
                 self.timeout,
             )
@@ -2945,19 +2370,15 @@ class MusicPlugin(Star):
                 await event.send(event.plain_result("已取消选歌。"))
                 return
             selected_song = songs[selected_song_index]
-            display_str, keys = self.get_models_display_list(api_type=api_type)
+            display_str, keys = self.get_models_display_list()
             if not keys:
-                refresh_cmd = (
-                    "/刷新svcvc音色" if api_type == "svcvc" else f"/刷新{api_type}模型"
-                )
                 yield event.plain_result(
-                    f"当前没有可用的 {self._engine_display_name(api_type)} 模型/音色，"
-                    f"请先使用 {refresh_cmd}。"
+                    "当前没有可用的 RVC 模型，请先使用 /刷新rvc模型。"
                 )
                 return
             selected_model_index, event = await self.selection_ui.choose(
                 event,
-                f"🎙️ {self._engine_display_name(api_type)} · 选择音色\n已选歌曲：{selected_song['name']}\n歌手：{selected_song['artists']}",
+                f"🎙️ RVC · 选择音色\n已选歌曲：{selected_song['name']}\n歌手：{selected_song['artists']}",
                 [line.split(". ", 1)[1] for line in display_str.splitlines()],
                 self.timeout,
             )
@@ -2977,8 +2398,8 @@ class MusicPlugin(Star):
             event,
             "🎙️ 开始翻唱",
             f"歌曲：{selected_song['name']}\n歌手：{selected_song['artists']}\n"
-            f"引擎：{self._engine_display_name(api_type)}\n音色：{selected_model}\n"
-            f"来源：{source_display}\n升降调：{key_shift if key_shift is not None else '自动'}\n\n"
+            f"音色：{selected_model}\n来源：{source_display}\n"
+            f"升降调：{key_shift}\n\n"
             "已开始生成，完成后会发送音频。",
         )
         await self._send_song(
@@ -2986,8 +2407,8 @@ class MusicPlugin(Star):
             song=selected_song,
             model_name=selected_model,
             key_shift=key_shift,
-            api_type=api_type,
         )
+
 
     async def initialize(self):
         """Bind QQ callback handlers to platform clients already loaded."""
@@ -3013,19 +2434,18 @@ class MusicPlugin(Star):
             "这个选择菜单已过期，或不属于你。请重新发送点歌命令，再使用新菜单。"
         )
 
-    async def _send_song(self, event: AstrMessageEvent, song: dict, model_name: str, key_shift: Optional[int], api_type="rvc"):
+    async def _send_song(self, event: AstrMessageEvent, song: dict, model_name: str, key_shift: Optional[int]):
         result_path = None
         temp_audio_file = None
-        effective_seed = None
         song_name = song.get("name", "翻唱")
-        if not self._register_active_task(event, song_name, api_type, model_name):
+        if not self._register_active_task(event, song_name, model_name):
             await event.send(event.plain_result("⏳ 当前会话已有翻唱任务，请等待完成或先取消任务。"))
             return
         self._bind_active_asyncio_task(event)
         try:
             await self._send_progress_notice(event, step="正在取歌", song=song_name)
-            # 统一取歌入口：卡片/命令选中的歌曲（网易云 id、QQ mid、甚至本地文件）
-            # 都在这里变成"中间层能直接吃的本地音频"，绝不把 id/mid 原样传下去。
+            # 统一取歌入口：卡片/命令选中的歌曲（各平台 id、甚至本地文件）
+            # 都在这里变成"中间层能直接吃的本地音频"，绝不把 id 原样传下去。
             song_input, prepare_reason, _prepare_trial = await self._prepare_song_audio(
                 event, song
             )
@@ -3056,22 +2476,16 @@ class MusicPlugin(Star):
                 ),
                 song=song_name,
             )
-            
-            result_path, cache_hit, effective_seed = await self._predict_cover(
+
+            result_path, cache_hit = await self._predict_cover(
                 event=event,
-                api_type=api_type,
                 song_name_src=song_input,
                 model_name=model_name,
                 key_shift=key_shift,
             )
-            
+
             if result_path and os.path.exists(result_path):
                 await self._send_cover_result(event, result_path, song_name=song_name, cache_hit=cache_hit)
-                if api_type == "svcvc" and effective_seed is not None:
-                    await event.send(event.plain_result(
-                        f"🎲 SoulX-SVCVC 本次实际种子：{effective_seed}"
-                        f"（{'随机' if self.svcvc_random_seed else '固定'}）"
-                    ))
             else:
                 await self.outbound.say(event, "failed", song=song_name, model=model_name, reason="生成失败，后端没有返回有效的音频文件")
         except Exception as e:
@@ -3091,117 +2505,101 @@ class MusicPlugin(Star):
                 try: os.remove(temp_audio_file)
                 except OSError as e: logger.error(f"删除临时音频文件失败: {e}")
 
+
     async def _execute_local_cover(self, event: AstrMessageEvent, audio_path: str,
                                     model_name: Optional[str] = None,
                                     model_index: Optional[int] = None,
-                                    api_type: str = "rvc",
                                     key_shift: Optional[int] = 0):
-        """本地音频翻唱核心执行逻辑"""
+        """本地音频翻唱核心执行逻辑（只用 RVC）"""
         if not os.path.exists(audio_path):
             await event.send(event.plain_result("❌ 音频文件不存在或已过期，请重新发送音频。"))
             return
-        
+
         size_mb = os.path.getsize(audio_path) / (1024 * 1024)
         if size_mb > self.max_local_audio_size_mb:
             await event.send(event.plain_result(f"❌ 音频文件过大 ({size_mb:.1f}MB)，超过限制 {self.max_local_audio_size_mb}MB。"))
             return
-        
-        if not self._is_engine_enabled(api_type):
-            await event.send(event.plain_result(
-                f"❌ {self._engine_display_name(api_type)} 功能已禁用。"
-            ))
+
+        if not self.enable_rvc:
+            await event.send(event.plain_result("❌ RVC 功能已在配置中禁用。"))
             return
-        
-        models_keywords = self._get_engine_models(api_type)
+
+        models_keywords = self.rvc_models_keywords
         if not models_keywords:
-            refresh_cmd = "/刷新svcvc音色" if api_type == "svcvc" else f"/刷新{api_type}模型"
             await event.send(event.plain_result(
-                f"❌ 当前没有可用的 {self._engine_display_name(api_type)} 模型/音色，"
-                f"请先使用 {refresh_cmd}。"
+                "❌ 当前没有可用的 RVC 模型，请先使用 /刷新rvc模型。"
             ))
             return
-        
+
         # 配置下拉选的默认 RVC 音色：调用方没给模型名也没给序号时优先用它
         if not model_name and model_index is None:
-            model_index = self._configured_rvc_model_index(api_type) or 1
-        
+            model_index = self._configured_rvc_model_index() or 1
+
         if model_name:
-            matched = self._find_model_index_by_name(model_name, api_type)
+            matched = self._find_model_index_by_name(model_name)
             if matched:
                 model_index = matched
             else:
                 await event.send(event.plain_result(
-                    f"❌ 未找到匹配的 {self._engine_display_name(api_type)} 模型/音色：'{model_name}'"
+                    f"❌ 未找到匹配的 RVC 模型：'{model_name}'"
                 ))
                 return
-        
+
         if not (1 <= model_index <= len(models_keywords)):
             await event.send(event.plain_result(f"❌ 模型序号无效，当前共有 {len(models_keywords)} 个模型。"))
             return
-        
-        min_shift, max_shift = self._key_shift_range(api_type)
-        if key_shift is not None and not (min_shift <= key_shift <= max_shift):
-            await event.send(event.plain_result(
-                f"❌ 音调调整值无效，请在 {min_shift} 到 {max_shift} 之间选择。"
-            ))
+
+        if key_shift is not None and not (-12 <= key_shift <= 12):
+            await event.send(event.plain_result("❌ 音调调整值无效，请在 -12 到 12 之间选择。"))
             return
-        
-        _, keys = self.get_models_display_list(api_type=api_type)
+
+        _, keys = self.get_models_display_list()
         selected_model = keys[model_index - 1]
-        models_info = self.get_models_detailed_list(api_type)
+        models_info = self.get_models_detailed_list()
         model_display = ""
         for m in models_info:
             if m["index"] == model_index:
                 model_display = m["display"]
                 break
-        
+
         song_display_name = os.path.splitext(os.path.basename(audio_path))[0]
         if song_display_name.startswith("qq_") or song_display_name.startswith("dl_"):
             song_display_name = "本地音频"
-        
-        if not self._register_active_task(event, song_display_name, api_type, model_display):
+
+        if not self._register_active_task(event, song_display_name, model_display):
             await event.send(event.plain_result("⏳ 当前会话已有翻唱任务，请等待完成或先取消任务。"))
             return
         self._bind_active_asyncio_task(event)
-        
+
         result_path = None
-        effective_seed = None
         try:
-            engine_display = self._engine_display_name(api_type)
             await self.selection_ui.send_card(
                 event,
                 "🎙️ 本地音频翻唱",
-                f"🎵 正在用【{model_display}】({engine_display}) 处理您的音频，请稍候...",
+                f"🎵 正在用【{model_display}】处理您的音频，请稍候...",
             )
 
-            result_path, cache_hit, effective_seed = await self._predict_cover(
+            result_path, cache_hit = await self._predict_cover(
                 event=event,
-                api_type=api_type,
                 song_name_src=audio_path,
                 model_name=selected_model,
                 key_shift=key_shift,
             )
-            
+
             if result_path and os.path.exists(result_path):
                 await self._send_cover_result(event, result_path, song_name=song_display_name, cache_hit=cache_hit)
-                
-                result_msg = f"✅ 已成功使用 {engine_display} 音色【{selected_model}】处理您的音频！"
+
+                result_msg = f"✅ 已成功使用 RVC 音色【{selected_model}】处理您的音频！"
                 if cache_hit:
                     result_msg = f"⚡ 命中缓存！{result_msg}"
-                if api_type == "svcvc" and effective_seed is not None:
-                    result_msg += (
-                        f"\n🎲 实际种子：{effective_seed}"
-                        f"（{'随机' if self.svcvc_random_seed else '固定'}）"
-                    )
                 if self.enable_config_report:
-                    actual_shift = self._effective_key_shift(api_type, key_shift)
-                    result_msg += f"\n\n📊 本次配置：类型={engine_display}, 模型={model_display}, 调音={actual_shift:+d}"
+                    result_msg += f"\n\n📊 本次配置：模型={model_display}, 调音={int(key_shift or 0):+d}"
                 await self.selection_ui.send_card(event, "✅ 翻唱完成", result_msg)
                 await self._notify_llm_with_context(event, song_display_name, "cache_hit" if cache_hit else "success")
             else:
                 await event.send(event.plain_result("❌ 处理失败，后端未返回有效文件路径。"))
                 await self._notify_llm_with_context(event, song_display_name, "failed", result_detail="后端未返回文件路径")
-                
+
         except Exception as e:
             logger.error(traceback.format_exc())
             error_msg = f"处理时发生错误: {e}"
@@ -3225,81 +2623,69 @@ class MusicPlugin(Star):
                 except OSError:
                     pass
 
+
     # ==================== 基础LLM工具（原有功能） ====================
     
     @filter.llm_tool(name="search_music")
-    async def search_music(self, event: AstrMessageEvent, keyword: str, limit: int = 5, platform: str = "default") -> str:
-        '''搜索网易云音乐的歌曲。
+    async def search_music(self, event: AstrMessageEvent, keyword: str, limit: int = 5) -> str:
+        '''按插件配置的音源顺序搜歌（默认网易云 → 酷狗 → 酷我 → QQ 音乐）。
 
         Args:
             keyword(string): 搜索关键词，可以是歌曲名、歌手名等
             limit(number): 返回结果数量上限，默认为5，最大为10
-            platform(string, optional): 0.3.0 起只支持网易云，传其它值一律按网易云处理
-        
+
         Returns:
-            返回搜索到的歌曲列表，包含序号、歌名、歌手和歌曲ID
+            返回搜索到的歌曲列表，包含序号、歌名、歌手和来源音源
         '''
-        platform_name = "网易云音乐"
-        _netease_api_inst = None
-        
         try:
             limit = min(max(limit, 1), 10)
-            api_to_use, _search_api_temporary = self._netease_search_api()
-            if _search_api_temporary:
-                _netease_api_inst = api_to_use
-
-            songs = await asyncio.wait_for(
-                api_to_use.fetch_data(keyword=keyword, limit=limit),
+            candidates, reason = await asyncio.wait_for(
+                self.song_router.search_candidates(keyword, limit=limit),
                 timeout=self.music_api_timeout,
             )
-            
-            if not songs:
-                return f"在{platform_name}未找到与 '{keyword}' 相关的歌曲。"
-            
+
+            if not candidates:
+                return f"没找到与 '{keyword}' 相关的歌曲（{reason}）。"
+
             if self.enable_enhanced_context:
                 result_lines = [
-                    f"🎵 在{platform_name}找到 {len(songs)} 首相关歌曲：",
+                    f"🎵 找到 {len(candidates)} 首相关歌曲：",
                     "",
                     "【歌曲列表】"
                 ]
-                for i, song in enumerate(songs, 1):
-                    alias = f"（别名：{song['alias']}）" if song.get("alias") else ""
+                for i, song in enumerate(candidates, 1):
+                    alias = f"（别名：{song.alias}）" if song.alias else ""
                     result_lines.append(
-                        f"  {i}. 《{song['name']}》 - {song['artists']}{alias}"
-                        f"\n     ID: {song['id']}"
+                        f"  {i}. 《{song.name}》 - {song.artists}{alias}"
+                        f"\n     来源: {source_router.SOURCE_DISPLAY.get(song.source, song.source)}"
                     )
-                
+
                 result_lines.extend([
                     "",
                     "💡 快捷指令提示：",
-                    f"- 直接说 '翻唱第X首' 或 '用第Y个模型翻唱第X首'",
+                    "- 直接说 '翻唱第X首' 或 '用第Y个模型翻唱第X首'",
                     "- 我会自动帮您完成后续步骤！",
                     "",
-                    f"📝 当前状态：已在{platform_name}搜索 '{keyword}'，共 {len(songs)} 首歌曲可选"
+                    f"📝 当前状态：已搜索 '{keyword}'，共 {len(candidates)} 首歌曲可选"
                 ])
             else:
-                result_lines = [f"🎵 在{platform_name}找到 {len(songs)} 首相关歌曲："]
-                for i, song in enumerate(songs, 1):
-                    alias = f"（别名：{song['alias']}）" if song.get("alias") else ""
+                result_lines = [f"🎵 找到 {len(candidates)} 首相关歌曲："]
+                for i, song in enumerate(candidates, 1):
+                    alias = f"（别名：{song.alias}）" if song.alias else ""
                     result_lines.append(
-                        f"{i}. 《{song['name']}》 - {song['artists']}{alias} (ID: {song['id']})"
+                        f"{i}. 《{song.name}》 - {song.artists}{alias}"
                     )
-                result_lines.append(f"\n请告诉用户搜索结果，并询问他们想要翻唱哪首歌（输入序号）。数据来源：{platform_name}")
-            
+                result_lines.append("\n请告诉用户搜索结果，并询问他们想要翻唱哪首歌（输入序号）。")
+
             return "\n".join(result_lines)
         except Exception as e:
             logger.error(traceback.format_exc())
             return f"搜索歌曲时出错: {e}"
-        finally:
-            if _netease_api_inst is not None:
-                try:
-                    await _netease_api_inst.close()
-                except Exception as exc:
-                    logger.debug(f"关闭临时网易云搜索会话失败: {exc}")
+
 
     @filter.llm_tool(name="rvc_cover")
-    async def rvc_cover(self, event: AstrMessageEvent, song_name: str, artist_name: Optional[str] = None, model_index: int = 1, model_name: Optional[str] = None, key_shift: int = 0, music_source: Optional[str] = None) -> str:
-        '''使用RVC模型翻唱歌曲。
+    async def rvc_cover(self, event: AstrMessageEvent, song_name: str, artist_name: Optional[str] = None, model_index: int = 1, model_name: Optional[str] = None, key_shift: int = 0) -> str:
+        '''使用 RVC 音色模型翻唱歌曲。
 
         **只在用户明确要「唱 / 翻唱 / 变声」时调用。用户说「点歌」「放首歌」「听」是想放原曲，
         不要用本工具。**
@@ -3316,186 +2702,49 @@ class MusicPlugin(Star):
             model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
                 例如：'塔菲'会自动匹配到tafeim.pth
             key_shift(number): 音调调整，范围为-12到12，默认为0
-            music_source(string, optional): 已忽略；只用网易云取歌
-        
+
         Returns:
             翻唱结果的描述信息（异步模式会立即返回"正在处理"）
-        
+
         注意：
-            RVC功能可能已在配置中禁用，此时会返回错误提示。
+            RVC 功能可能已在配置中禁用，此时会返回错误提示。
         '''
         rejected = self._reject_music_request(event, "rvc_cover")
         if rejected:
             return rejected
         if not self.enable_rvc:
-            return "❌ RVC 功能已在配置中禁用。如需使用请在插件配置中设置 enable_rvc 为 true，或使用 svc_cover 工具进行SVC翻唱。"
+            return "❌ RVC 功能已在配置中禁用。如需使用请在插件配置中设置 enable_rvc 为 true。"
         if model_name:
-            matched = self._find_model_index_by_name(model_name, "rvc")
+            matched = self._find_model_index_by_name(model_name)
             if matched:
                 model_index = matched
             else:
-                return f"❌ 未找到匹配的RVC模型: '{model_name}'\n\n💡 提示：使用 get_available_models('rvc') 查看可用模型"
-        
-        models_info = self.get_models_detailed_list("rvc")
+                return f"❌ 未找到匹配的RVC模型: '{model_name}'\n\n💡 提示：使用 get_available_models 查看可用模型"
+
+        models_info = self.get_models_detailed_list()
         model_display = ""
         for m in models_info:
             if m["index"] == model_index:
                 model_display = m["display"]
                 break
-        
-        actual_music_source = self._resolve_music_source(music_source)
-        source_display = "网易云"
-        
-        if not self._register_active_task(event, song_name, "rvc", model_display):
+
+        if not self._register_active_task(event, song_name, model_display):
             return "⏳ 当前已有翻唱任务，请等待完成或先调用 cancel_cover_task。"
         logger.info(
             f"[MatsukoCover任务Debug] 接受 rvc_cover 请求 | song={song_name} | "
-            f"artist={artist_name or '-'} | model={model_display} | source={actual_music_source}"
+            f"artist={artist_name or '-'} | model={model_display}"
         )
         task = self._create_tracked_task(self._smart_cover_async(
-            event, song_name, "rvc", model_index, key_shift, model_display,
-            actual_music_source, artist_name=artist_name,
-        ))
-        self._bind_active_asyncio_task(event, task)
-        # 只回一句中性短句给 LLM，具体怎么说由人格模型组织；不再拼符号和参数
-        return f"好，我去弄这首《{song_name}》，好了直接发你。"
-
-    @filter.llm_tool(name="svc_cover")
-    async def svc_cover(self, event: AstrMessageEvent, song_name: str, artist_name: Optional[str] = None, model_index: int = 1, model_name: Optional[str] = None, key_shift: int = 0, music_source: Optional[str] = None) -> str:
-        '''使用SVC模型翻唱歌曲。
-
-        Args:
-            song_name(string): 用户说的歌名，**原样整串**填进来。版本名/别名（司凤版、
-                伴奏版、纯享版、DJ版…）属于歌名的一部分，留在 song_name 里。
-                例：「唱雨爱司凤版」→ song_name='雨爱司凤版'，artist_name 不填；
-                「唱周杰伦的晴天」→ song_name='晴天'，artist_name='周杰伦'。
-            artist_name(string, optional): 只有用户**明确说出歌手**时才填
-                （「周杰伦的晴天」「晴天 周杰伦 唱的」「歌手是周杰伦」）。
-                没说歌手就不要填，不许凭印象或搜索结果猜，也不要把版本名塞进来。
-            model_index(number): 使用的模型序号（从可用模型列表中选择），默认为1表示第一个模型
-            model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
-                例如：'塔菲'会自动匹配到tafeim.pth
-            key_shift(number): 音调调整，范围为-12到12，默认为0
-            music_source(string, optional): 已忽略；只用网易云取歌
-        
-        Returns:
-            翻唱结果的描述信息（异步模式会立即返回"正在处理"）
-        
-        注意：
-            SVC功能可能已在配置中禁用，此时会返回错误提示。
-        '''
-        rejected = self._reject_music_request(event, "svc_cover")
-        if rejected:
-            return rejected
-        if not self.enable_svc:
-            return "❌ SVC 功能已在配置中禁用。如需使用请在插件配置中设置 enable_svc 为 true，或使用 rvc_cover 工具进行RVC翻唱。"
-        if model_name:
-            matched = self._find_model_index_by_name(model_name, "svc")
-            if matched:
-                model_index = matched
-            else:
-                return f"❌ 未找到匹配的SVC模型: '{model_name}'\n\n💡 提示：使用 get_available_models('svc') 查看可用模型"
-        
-        models_info = self.get_models_detailed_list("svc")
-        model_display = ""
-        for m in models_info:
-            if m["index"] == model_index:
-                model_display = m["display"]
-                break
-        
-        actual_music_source = self._resolve_music_source(music_source)
-        source_display = "网易云"
-        
-        if not self._register_active_task(event, song_name, "svc", model_display):
-            return "⏳ 当前已有翻唱任务，请等待完成或先调用 cancel_cover_task。"
-        logger.info(
-            f"[MatsukoCover任务Debug] 接受 svc_cover 请求 | song={song_name} | "
-            f"artist={artist_name or '-'} | model={model_display} | source={actual_music_source}"
-        )
-        task = self._create_tracked_task(self._smart_cover_async(
-            event, song_name, "svc", model_index, key_shift, model_display,
-            actual_music_source, artist_name=artist_name,
-        ))
-        self._bind_active_asyncio_task(event, task)
-        # 只回一句中性短句给 LLM，具体怎么说由人格模型组织；不再拼符号和参数
-        return f"好，我去弄这首《{song_name}》，好了直接发你。"
-
-    @filter.llm_tool(name="svcvc_cover")
-    async def svcvc_cover(
-        self,
-        event: AstrMessageEvent,
-        song_name: str,
-        artist_name: Optional[str] = None,
-        model_index: int = 1,
-        model_name: Optional[str] = None,
-        key_shift: Optional[int] = None,
-        music_source: Optional[str] = None,
-    ) -> str:
-        '''使用 SoulX-Singer SVC Voice Conversion 参考音色翻唱歌曲。
-
-        Args:
-            song_name(string): 用户说的歌名，**原样整串**填进来。版本名/别名（司凤版、
-                伴奏版等）属于歌名的一部分，留在 song_name 里。
-            artist_name(string, optional): 只有用户**明确说出歌手**时才填；
-                没说歌手就不要填，也不要把版本名塞进来。
-            model_index(number): 参考音色序号，从1开始
-            model_name(string, optional): 参考音色名称或别名，优先于序号
-            key_shift(number, optional): 手动变调，范围-36到36；不传时使用插件配置，显式传0会覆盖配置并交给SoulX自动匹配音域
-            music_source(string, optional): 已忽略；0.3.0 起只用网易云
-
-        Returns:
-            后台任务启动结果；完成后会自动发送音频和实际种子
-        '''
-        rejected = self._reject_music_request(event, "svcvc_cover")
-        if rejected:
-            return rejected
-        if not self.enable_svcvc:
-            return "❌ SoulX-SVCVC 已禁用，请在插件配置中开启 enable_svcvc。"
-
-        if model_name:
-            matched = self._find_model_index_by_name(model_name, "svcvc")
-            if matched:
-                model_index = matched
-            else:
-                return (
-                    f"❌ 未找到匹配的 SoulX-SVCVC 参考音色：'{model_name}'\n\n"
-                    "💡 可使用 get_available_models('svcvc') 查看音色列表"
-                )
-
-        models_info = self.get_models_detailed_list("svcvc")
-        model_display = next(
-            (m["display"] for m in models_info if m["index"] == model_index), ""
-        )
-        if not model_display:
-            return "❌ 参考音色序号无效，请先读取 SoulX-SVCVC 音色列表。"
-
-        actual_music_source = self._resolve_music_source(music_source)
-        source_display = "网易云"
-
-        if not self._register_active_task(event, song_name, "svcvc", model_display):
-            return "⏳ 当前已有翻唱任务，请等待完成或先调用 cancel_cover_task。"
-        logger.info(
-            f"[MatsukoCover任务Debug] 接受 svcvc_cover 请求 | song={song_name} | "
-            f"artist={artist_name or '-'} | profile={model_display} | source={actual_music_source}"
-        )
-        task = self._create_tracked_task(self._smart_cover_async(
-            event,
-            song_name,
-            "svcvc",
-            model_index,
-            key_shift,
-            model_display,
-            actual_music_source,
+            event, song_name, model_index, key_shift, model_display,
             artist_name=artist_name,
         ))
         self._bind_active_asyncio_task(event, task)
-        seed_mode = "随机种子" if self.svcvc_random_seed else f"固定种子 {self.svcvc_seed}"
-        logger.info(f"[MatsukoCover任务Debug] SoulX-SVCVC 启动 | seed={seed_mode} | source={source_display}")
         # 只回一句中性短句给 LLM，具体怎么说由人格模型组织；不再拼符号和参数
         return f"好，我去弄这首《{song_name}》，好了直接发你。"
 
-    async def _do_cover(self, event: AstrMessageEvent, song_name: str, api_type: str, model_index: int, key_shift: Optional[int], music_source: str = None, artist_name: str = "") -> str:
-        """统一的翻唱执行逻辑。
+
+    async def _do_cover(self, event: AstrMessageEvent, song_name: str, model_index: int, key_shift: Optional[int], artist_name: str = "") -> str:
+        """统一的翻唱执行逻辑（只用 RVC）。
 
         ``song_name`` 原样整串交给搜歌入口；``artist_name`` 非空才当过滤条件，
         由 :func:`source_router.pick_best_song` 统一处理（不再拼搜索串）。
@@ -3506,35 +2755,25 @@ class MusicPlugin(Star):
         try:
             logger.info(
                 f"[CoverFlow:{flow_id}] stage=start | song={song_name} | "
-                f"api={api_type} | model_index={model_index} | source={music_source}"
+                f"model_index={model_index}"
             )
-            if not self._is_engine_enabled(api_type):
-                available = ", ".join(self._get_available_engines()).upper() or "无"
-                return (
-                    f"❌ {self._engine_display_name(api_type)} 功能已在配置中禁用。"
-                    f"当前可用引擎：{available}"
-                )
-            if api_type != "svcvc" and key_shift is None:
+            if not self.enable_rvc:
+                return "❌ RVC 功能已在配置中禁用。"
+            if key_shift is None:
                 key_shift = self.default_key_shift
-            
-            models_keywords = self._get_engine_models(api_type)
-            
+
+            models_keywords = self.rvc_models_keywords
+
             if not models_keywords:
-                refresh_cmd = "/刷新svcvc音色" if api_type == "svcvc" else f"/刷新{api_type}模型"
-                return (
-                    f"❌ 当前没有可用的 {self._engine_display_name(api_type)} 模型/音色，"
-                    f"请先使用 {refresh_cmd} 更新列表。"
-                )
-            
+                return "❌ 当前没有可用的 RVC 模型，请先使用 /刷新rvc模型 更新列表。"
+
             if not (1 <= model_index <= len(models_keywords)):
                 return f"❌ 模型序号无效，当前共有 {len(models_keywords)} 个模型可选，请输入 1 到 {len(models_keywords)} 之间的数字。"
-            
-            min_shift, max_shift = self._key_shift_range(api_type)
-            if key_shift is not None and not (min_shift <= key_shift <= max_shift):
-                return f"❌ 音调调整值无效，请在 {min_shift} 到 {max_shift} 之间选择。"
-            
+
+            if not (-12 <= key_shift <= 12):
+                return "❌ 音调调整值无效，请在 -12 到 12 之间选择。"
+
             # === 搜歌：0.8.0 起 song_name 整串原样搜，artist 只在明确给出时当过滤条件 ===
-            actual_music_source = self._resolve_music_source(music_source)
             logger.info(
                 f"[CoverFlow:{flow_id}] stage=music_search | "
                 f"order={source_router.describe_order(self.source_order)} | "
@@ -3564,42 +2803,41 @@ class MusicPlugin(Star):
                     f"（{search_reason}），换个更全的歌名或歌手试试。"
                 )
 
-            _, keys = self.get_models_display_list(api_type=api_type)
+            _, keys = self.get_models_display_list()
             selected_model = keys[model_index - 1]
-            
+
             # === 自动升降调 ===
-            models_info = self.get_models_detailed_list(api_type)
+            models_info = self.get_models_detailed_list()
             model_display = ""
             for m in models_info:
                 if m["index"] == model_index:
                     model_display = m["display"]
                     break
-            
+
             original_key_shift = key_shift
             artist_from_song = selected_song.get("artists", "")
             artist_gender = None
             model_gender = None
             detection_attempted = False
-            if api_type != "svcvc" and self.enable_auto_key_shift and key_shift == 0:
+            if self.enable_auto_key_shift and key_shift == 0:
                 detection_attempted = True
                 logger.info(f"[CoverFlow:{flow_id}] stage=gender_detection")
                 artist_gender, model_gender = await self._detect_gender_pair(
                     artist_from_song, model_display, event
                 )
-            if api_type != "svcvc":
-                key_shift = await self._calc_auto_key_shift(
-                    artist_from_song,
-                    model_display,
-                    key_shift,
-                    artist_gender,
-                    model_gender,
-                    event,
-                    detection_attempted=detection_attempted,
-                )
+            key_shift = await self._calc_auto_key_shift(
+                artist_from_song,
+                model_display,
+                key_shift,
+                artist_gender,
+                model_gender,
+                event,
+                detection_attempted=detection_attempted,
+            )
             if key_shift != original_key_shift and self.enable_auto_key_shift:
                 logger.info(f"自动升降调：{artist_from_song} → {model_display}，音调从 {original_key_shift:+d} 调整为 {key_shift:+d}")
-            
-            # === 统一取歌入口：只把本地音频交给中间层，id/mid 一律不出插件 ===
+
+            # === 统一取歌入口：只把本地音频交给中间层，id 一律不出插件 ===
             song_input_for_api, prepare_reason, prepare_trial = await self._prepare_song_audio(
                 event, selected_song
             )
@@ -3622,41 +2860,34 @@ class MusicPlugin(Star):
                 song=selected_song.get("name", song_name),
             )
 
-            base_url = self._get_engine_base_url(api_type)
             logger.info(
-                f"[CoverFlow:{flow_id}] stage=backend_connect | url={base_url}"
+                f"[CoverFlow:{flow_id}] stage=backend_connect | url={self.rvc_base_url}"
             )
             logger.info(
                 f"[CoverFlow:{flow_id}] stage=backend_submit | api=/convert | "
                 f"model={selected_model}"
             )
-            result_path, cache_hit, effective_seed = await self._predict_cover(
+            result_path, cache_hit = await self._predict_cover(
                 event=event,
-                api_type=api_type,
                 song_name_src=song_input_for_api,
                 model_name=selected_model,
                 key_shift=key_shift,
             )
             logger.info(f"[CoverFlow:{flow_id}] stage=backend_done")
-            
+
             if result_path and os.path.exists(result_path):
                 await self._send_cover_result(event, result_path, song_name=selected_song.get('name', song_name), cache_hit=cache_hit)
-                if api_type == "svcvc" and effective_seed is not None:
-                    await event.send(event.plain_result(
-                        f"🎲 SoulX-SVCVC 本次实际种子：{effective_seed}"
-                        f"（{'随机' if self.svcvc_random_seed else '固定'}）"
-                    ))
                 song_artist = selected_song.get('artists', '未知艺人')
                 if cache_hit:
-                    result_msg = f"⚡ 命中缓存！已成功使用 {self._engine_display_name(api_type)} 音色【{selected_model}】发送《{selected_song['name']}》({song_artist}) 的翻唱版本！"
+                    result_msg = f"⚡ 命中缓存！已成功使用 RVC 音色【{selected_model}】发送《{selected_song['name']}》({song_artist}) 的翻唱版本！"
                 else:
-                    result_msg = f"已成功使用 {self._engine_display_name(api_type)} 音色【{selected_model}】生成《{selected_song['name']}》({song_artist}) 的翻唱版本！音频文件已发送。"
-                if api_type != "svcvc" and key_shift != original_key_shift and self.enable_auto_key_shift:
+                    result_msg = f"已成功使用 RVC 音色【{selected_model}】生成《{selected_song['name']}》({song_artist}) 的翻唱版本！音频文件已发送。"
+                if key_shift != original_key_shift and self.enable_auto_key_shift:
                     gender_label = {"male": "男", "female": "女"}.get
                     result_msg += f"\n🎵 自动升降调：{song_artist}({gender_label(artist_gender, '?')}) → {model_display}({gender_label(model_gender, '?')})，音调 {original_key_shift:+d} → {key_shift:+d}"
             else:
                 result_msg = "❌ 生成失败，后端未返回有效文件路径。"
-                
+
             # === 方案E：记录偏好 ===
             if self.enable_preference_learning:
                 user_id = self._get_user_id(event)
@@ -3664,15 +2895,14 @@ class MusicPlugin(Star):
                 pref["usage_count"] += 1
                 pref["last_used_time"] = datetime.now().isoformat()
                 pref["last_used_model"] = selected_model
-                pref["last_used_api_type"] = api_type
-                
+
                 song_entry = f"{selected_song['name']} - {selected_song['artists']}"
                 existing = [s for s in pref["favorite_songs"] if s.split(" - ")[0] == selected_song['name']]
                 if not existing:
                     pref["favorite_songs"].append(song_entry)
                     if len(pref["favorite_songs"]) > 30:
                         pref["favorite_songs"] = pref["favorite_songs"][-30:]
-                
+
                 artist = selected_song['artists'].split(',')[0].strip() if ',' in selected_song['artists'] else selected_song['artists']
                 artists_dict = pref.get("preferred_artists", {})
                 if artist not in artists_dict:
@@ -3681,7 +2911,7 @@ class MusicPlugin(Star):
                 artists_dict[artist]["last_time"] = datetime.now().isoformat()
                 artists_dict[artist]["model"] = selected_model
                 pref["preferred_artists"] = artists_dict
-                
+
                 artist_model_map = pref.get("artist_model_map", {})
                 if artist not in artist_model_map:
                     artist_model_map[artist] = {}
@@ -3690,17 +2920,17 @@ class MusicPlugin(Star):
                     artist_model_map[artist][model_key] = 0
                 artist_model_map[artist][model_key] += 1
                 pref["artist_model_map"] = artist_model_map
-                
+
                 await self._save_preferences()
-            
+
             return result_msg
-                
+
         except Exception as e:
             logger.error(f"[CoverFlow:{flow_id}] stage=failed\n{traceback.format_exc()}")
             if "Timeout" in str(e):
                 return f"❌ 生成超时了！后端在 {self.inference_timeout} 秒内没有完成任务。"
             else:
-                return f"❌ {api_type.upper()} 翻唱时发生错误: {e}"
+                return f"❌ RVC 翻唱时发生错误: {e}"
         finally:
             try:
                 if self.enable_send_file and result_path and os.path.isfile(result_path):
@@ -3714,106 +2944,57 @@ class MusicPlugin(Star):
                     f"删除临时文件失败（文件可能仍被占用，将在退出时清理）: {cleanup_error}"
                 )
 
+
     @filter.llm_tool(name="get_available_models")
-    async def get_available_models(self, event: AstrMessageEvent, api_type: str = "all") -> str:
-        '''获取当前可用的 RVC、SVC-Fusion 与 SoulX-SVCVC 模型/参考音色列表。
+    async def get_available_models(self, event: AstrMessageEvent) -> str:
+        '''获取当前可用的 RVC 音色模型列表。
 
         Args:
-            api_type(string): 'rvc'、'svc'、'svcvc' 或 'all'，默认为'all'
-        
+            无
+
         Returns:
             可用模型的详细信息列表（包含序号、显示名、文件名、别名）
-        
+
         重要提示：
             - 可以直接用模型名称或别名指定模型，无需记住序号
             - 例如：model_name='塔菲' 会自动匹配到 tafeim.pth
             - 支持模糊匹配：输入部分名称也能找到
-            - 只会显示已启用的引擎（enable_rvc / enable_svc / enable_svcvc）
         '''
         try:
-            result_parts = []
-            
-            if api_type.lower() in ["all", "rvc"] and self.enable_rvc:
-                rvc_models = self.get_models_detailed_list(api_type="rvc")
-                if rvc_models:
-                    lines = []
-                    for m in rvc_models:
-                        alias_info = f" (别名: {m['alias']})" if m['alias'] else ""
-                        lines.append(f"  {m['index']}. {m['display']}【{m['name']}】{alias_info}")
-                    result_parts.append(f"【RVC 模型】(共 {len(rvc_models)} 个)\n" + "\n".join(lines))
-                else:
-                    result_parts.append("【RVC 模型】暂无可用模型，请使用 /刷新rvc模型")
-            
-            if api_type.lower() in ["all", "svc"] and self.enable_svc:
-                svc_models = self.get_models_detailed_list(api_type="svc")
-                if svc_models:
-                    lines = []
-                    for m in svc_models:
-                        alias_info = f" (别名: {m['alias']})" if m['alias'] else ""
-                        lines.append(f"  {m['index']}. {m['display']}【{m['name']}】{alias_info}")
-                    result_parts.append(f"\n【SVC 模型】(共 {len(svc_models)} 个)\n" + "\n".join(lines))
-                else:
-                    result_parts.append("\n【SVC 模型】暂无可用模型，请使用 /刷新svc模型")
+            rvc_models = self.get_models_detailed_list()
+            if not rvc_models:
+                return "【RVC 模型】暂无可用模型，请使用 /刷新rvc模型"
 
-            if api_type.lower() in ["all", "svcvc"] and self.enable_svcvc:
-                svcvc_profiles = self.get_models_detailed_list(api_type="svcvc")
-                if svcvc_profiles:
-                    lines = []
-                    for profile in svcvc_profiles:
-                        alias_info = f" (别名: {profile['alias']})" if profile['alias'] else ""
-                        lines.append(
-                            f"  {profile['index']}. {profile['display']}"
-                            f"【{profile['name']}】{alias_info}"
-                        )
-                    result_parts.append(
-                        f"\n【SoulX-SVCVC 参考音色】(共 {len(svcvc_profiles)} 个)\n"
-                        + "\n".join(lines)
-                    )
-                else:
-                    result_parts.append(
-                        "\n【SoulX-SVCVC 参考音色】暂无可用音色，请使用 /刷新svcvc音色"
-                    )
-            
-            if not result_parts:
-                return "没有可用的模型。"
-            
+            lines = []
+            for m in rvc_models:
+                alias_info = f" (别名: {m['alias']})" if m['alias'] else ""
+                lines.append(f"  {m['index']}. {m['display']}【{m['name']}】{alias_info}")
+
+            result_parts = [f"【RVC 模型】(共 {len(rvc_models)} 个)\n" + "\n".join(lines)]
             result_parts.append("\n\n💡 使用方式：")
             result_parts.append("- 用序号: model_index=2 （第2个模型）")
             result_parts.append("- 用名称: model_name='tafeim' 或 model_name='塔菲' （自动匹配）")
             result_parts.append("- 示例: '用塔菲模型翻唱《晴天》'")
-            
-            status_parts = []
-            if self.enable_rvc:
-                status_parts.append("RVC ✅")
-            else:
-                status_parts.append("RVC ❌(已禁用)")
-            if self.enable_svc:
-                status_parts.append("SVC ✅")
-            else:
-                status_parts.append("SVC ❌(已禁用)")
-            if self.enable_svcvc:
-                status_parts.append("SoulX-SVCVC ✅")
-            else:
-                status_parts.append("SoulX-SVCVC ❌(已禁用)")
-            result_parts.append(f"\n🔧 引擎状态: {' | '.join(status_parts)}")
-            
+
+            status = "RVC ✅" if self.enable_rvc else "RVC ❌(已禁用)"
+            result_parts.append(f"\n🔧 引擎状态: {status}")
+
             return "\n".join(result_parts)
         except Exception as e:
             logger.error(traceback.format_exc())
             return f"获取模型列表时出错: {e}"
 
+
     # ==================== 方案A：智能单步翻唱 ====================
     
     @filter.llm_tool(name="smart_cover")
-    async def smart_cover(self, event: AstrMessageEvent, 
-                         song_name: str, 
+    async def smart_cover(self, event: AstrMessageEvent,
+                         song_name: str,
                          artist_name: Optional[str] = None,
-                         api_type: Optional[str] = None,
                          model_index: Optional[int] = None,
                          model_name: Optional[str] = None,
-                         key_shift: Optional[int] = None,
-                         music_source: Optional[str] = None) -> str:
-        '''智能一键翻唱工具 - 自动完成搜索+选择+翻唱全流程！
+                         key_shift: Optional[int] = None) -> str:
+        '''智能一键 RVC 翻唱工具 - 自动完成搜索+选择+翻唱全流程！
 
         这是最高效的翻唱方式，只需提供歌曲名即可自动完成所有步骤。
 
@@ -3822,7 +3003,7 @@ class MusicPlugin(Star):
             - 用户说「点歌」「放首歌」「来一首」「听」这类是想放**原曲**，那是点歌插件的活儿，
               **绝对不要调用本工具**，否则会把听歌变成翻唱。
             - 拿不准是「听原曲」还是「翻唱」时，先问一句「你要原曲还是唱一遍？」再决定。
-        
+
         Args:
             song_name(string): 用户说的歌名，**原样整串**填进来，不要拆分。
                 - 「唱雨爱司凤版」→ song_name='雨爱司凤版'，artist_name 不填
@@ -3832,37 +3013,31 @@ class MusicPlugin(Star):
             artist_name(string, optional): 只有用户**明确说出歌手**时才填
                 （如「周杰伦的晴天」「晴天 周杰伦 唱的」「歌手是周杰伦」）。
                 用户没说歌手就**绝对不要填**，不许凭印象或搜索结果猜。
-            api_type(string, optional): 翻唱类型，'rvc'、'svc' 或 'svcvc'。不指定则使用默认值或用户偏好
-                当前可用引擎: {available_engines}
             model_index(number, optional): 模型序号（从1开始）。不指定则使用默认值或用户偏好
             model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
                 例如：'塔菲'会自动匹配到tafeim.pth，'maxmaxpoi'也能匹配
-            key_shift(number, optional): 音调调整。RVC/SVC 范围 -12 到 12，SoulX-SVCVC 范围 -36 到 36；不指定则使用默认值或用户偏好。
+            key_shift(number, optional): 音调调整，范围 -12 到 12；不指定则使用默认值或用户偏好。
                 调用此工具前，你应该分析原曲演唱者性别与目标模型音域的匹配关系（如周杰伦男声→塔菲喵女声）。但分析完成后请不要传入 key_shift，插件会根据分析结果自动应用配置中的升降调值（男→女用 male_to_female_shift，女→男用 female_to_male_shift）。只有当用户明确要求特定数值（如"升3调"）时才传入 key_shift。
-            music_source(string, optional): 已忽略；只用网易云取歌
-        
+
         Returns:
             翻唱结果描述（异步模式会立即返回"正在处理"）
-        
+
         注意：
             - model_name 支持中文别名和文件名，无需记住序号！
             - 如果同时指定 model_index 和 model_name，以 model_name 为准
             - 本工具采用异步执行，会立即返回并后台处理，完成后自动发送音频
-            - 音乐源固定为网易云（QQ 音源已下线）
-            - 如果指定的 api_type 已被禁用，会自动切换到可用的引擎或返回提示
+            - 取歌走插件配置的音源顺序（默认网易云 → 酷狗 → 酷我 → QQ 音乐）
         '''
         rejected = self._reject_music_request(event, "smart_cover")
         if rejected:
             return rejected
         if not self.enable_smart_cover:
             return "智能单步翻唱功能已在配置中禁用。请使用对应的独立翻唱工具。"
-        
+
         try:
-            available_engines = self._get_available_engines()
-            
-            if not available_engines:
-                return "❌ 所有翻唱引擎均已禁用，请至少启用 RVC、SVC 或 SoulX-SVCVC 之一。"
-            
+            if not self.enable_rvc:
+                return "❌ RVC 功能已在配置中禁用，请先在插件配置里开启 enable_rvc。"
+
             # === 方案B：检查是否有进行中的翻唱任务 ===
             active_task = self._get_active_task_status(event)
             if active_task:
@@ -3870,84 +3045,61 @@ class MusicPlugin(Star):
                 return (
                     f"⏳ 您已经有翻唱任务在进行中啦nya～\n"
                     f"歌曲：《{active_task['song_name']}》\n"
-                    f"引擎：{active_task['api_type'].upper()}\n"
                     f"状态：{active_task['status']}\n"
                     f"已进行：{elapsed}秒\n"
                     f"请稍等，完成后会自动发送音频喵！如果卡住了可以用 /取消翻唱任务 或 /查看翻唱任务 查看状态🐾"
                 )
-            
-            actual_api_type = api_type or self.default_api_type
-            
-            if actual_api_type and actual_api_type.lower() not in available_engines:
-                fallback = available_engines[0]
-                return f"⚠️ {actual_api_type.upper()} 引擎已在配置中禁用。\n当前可用的翻唱引擎: {', '.join(available_engines).upper()}\n请指定可用的引擎，例如 api_type='{fallback}'"
-            
+
             if model_name:
-                matched_index = self._find_model_index_by_name(model_name, actual_api_type)
+                matched_index = self._find_model_index_by_name(model_name)
                 if matched_index:
                     actual_model_index = matched_index
                 else:
-                    available = await self.get_available_models(event, actual_api_type)
+                    available = await self.get_available_models(event)
                     return f"❌ 未找到匹配的模型: '{model_name}'\n\n可用的模型：\n{available}\n\n💡 提示：可以使用 get_available_models 查看完整列表"
             else:
                 actual_model_index = model_index or self.default_model_index
-            
+
             actual_key_shift = (
-                key_shift
-                if key_shift is not None
-                else (None if actual_api_type == "svcvc" else self.default_key_shift)
+                key_shift if key_shift is not None else self.default_key_shift
             )
-            
-            actual_music_source = self._resolve_music_source(music_source)
-            
+
             if self.enable_preference_learning:
                 user_id = self._get_user_id(event)
                 pref = self._get_user_pref(user_id)
-                
-                if not api_type and pref.get("default_api_type"):
-                    actual_api_type = pref["default_api_type"]
-                
+
                 if not model_name and not model_index and pref.get("default_model_index"):
                     actual_model_index = pref["default_model_index"]
-                
+
                 if key_shift is None:
-                    actual_key_shift = (
-                        None
-                        if actual_api_type == "svcvc"
-                        else pref.get("default_key_shift", self.default_key_shift)
-                    )
-                
+                    actual_key_shift = pref.get("default_key_shift", self.default_key_shift)
+
                 if artist_name and not model_name and not model_index:
                     artist_model_map = pref.get("artist_model_map", {})
                     if artist_name in artist_model_map:
                         model_counts = artist_model_map[artist_name]
                         if model_counts:
                             best_model = max(model_counts, key=model_counts.get)
-                            models_info_tmp = self.get_models_detailed_list(actual_api_type)
+                            models_info_tmp = self.get_models_detailed_list()
                             for m in models_info_tmp:
                                 if m["filename"] == best_model or m["display"] == best_model:
                                     actual_model_index = m["index"]
                                     break
-            
-            # 偏好加载后可能覆盖了 api_type，需要再次验证可用性
-            if actual_api_type and actual_api_type.lower() not in available_engines:
-                fallback = available_engines[0]
-                return f"⚠️ {actual_api_type.upper()} 引擎已在配置中禁用。\n当前可用的翻唱引擎: {', '.join(available_engines).upper()}\n请指定可用的引擎，例如 api_type='{fallback}'"
-            
+
             # 配置下拉选的默认音色：用户没显式指定模型名/序号时优先用它
             if not model_name and not model_index:
-                configured_default_index = self._configured_rvc_model_index(actual_api_type)
+                configured_default_index = self._configured_rvc_model_index()
                 if configured_default_index:
                     actual_model_index = configured_default_index
-            
-            models_info = self.get_models_detailed_list(actual_api_type)
+
+            models_info = self.get_models_detailed_list()
             actual_model_display = ""
             artist_pref_hint = ""
             for m in models_info:
                 if m["index"] == actual_model_index:
                     actual_model_display = m["display"]
                     break
-            
+
             if self.enable_preference_learning and artist_name and not model_name and not model_index:
                 artist_model_map = pref.get("artist_model_map", {})
                 if artist_name in artist_model_map:
@@ -3957,30 +3109,29 @@ class MusicPlugin(Star):
                         if (m["filename"] == best_model or m["display"] == best_model) and m["index"] == actual_model_index:
                             artist_pref_hint = f"，这次按老习惯挑了翻唱{artist_name}常用的音色"
                             break
-            
-            source_display = "网易云"
-            
+
             # 注册活跃任务
-            if not self._register_active_task(event, song_name, actual_api_type, actual_model_display):
+            if not self._register_active_task(event, song_name, actual_model_display):
                 return "⏳ 当前已有翻唱任务，请等待完成或先调用 cancel_cover_task。"
-            
+
             task = self._create_tracked_task(self._smart_cover_async(
-                event, song_name, actual_api_type, actual_model_index, 
-                actual_key_shift, actual_model_display, actual_music_source,
+                event, song_name, actual_model_index,
+                actual_key_shift, actual_model_display,
                 artist_name=artist_name,
             ))
             self._bind_active_asyncio_task(event, task)
-            
+
             # 只回一句中性短句给 LLM，具体怎么说由人格模型组织；不再拼符号和参数
             return f"好，我去弄这首《{song_name}》，好了直接发你。{artist_pref_hint}"
-            
+
         except Exception as e:
             logger.error(traceback.format_exc())
             return f"智能翻唱出错: {e}"
 
+
     async def _smart_cover_async(self, event: AstrMessageEvent, song_name: str,
-                                 api_type: str, model_index: int, key_shift: Optional[int],
-                                 model_display: str, music_source: str = None,
+                                 model_index: int, key_shift: Optional[int],
+                                 model_display: str,
                                  artist_name: str = ""):
         """smart_cover 异步执行函数。
 
@@ -3990,11 +3141,10 @@ class MusicPlugin(Star):
         try:
             logger.info(
                 f"[MatsukoCover任务Debug] 后台翻唱流程已进入 | song={song_name} | "
-                f"artist={artist_name or '-'} | "
-                f"api={api_type} | model={model_display} | source={music_source}"
+                f"artist={artist_name or '-'} | model={model_display}"
             )
             result = await self._do_cover(
-                event, song_name, api_type, model_index, key_shift, music_source,
+                event, song_name, model_index, key_shift,
                 artist_name=artist_name,
             ) or ""
 
@@ -4007,16 +3157,15 @@ class MusicPlugin(Star):
             if is_failed:
                 logger.warning(
                     f"[MatsukoCover任务Debug] 翻唱失败 | song={song_name} | "
-                    f"api={api_type} | model={model_display} | detail={result}"
+                    f"model={model_display} | detail={result}"
                 )
                 await self.outbound.say(
                     event, "failed", song=song_name, model=model_display, reason=result
                 )
             elif self.enable_config_report:
                 # 成功时根据配置决定是否发送配置报告
-                source_info = f", 音乐源={music_source}" if music_source else ""
-                report_shift = self._effective_key_shift(api_type, key_shift)
-                result += f"\n\n📊 本次配置：类型={self._engine_display_name(api_type)}, 模型={model_display}, 调音={report_shift:+d}{source_info}"
+                report_shift = int(key_shift or 0)
+                result += f"\n\n📊 本次配置：模型={model_display}, 调音={report_shift:+d}"
                 await event.send(event.plain_result(result))
 
             # === LLM 上下文通知（方案A+B整合）===
@@ -4037,10 +3186,11 @@ class MusicPlugin(Star):
                 )
             except Exception:
                 pass
-        
+
         finally:
             # 方案B：无论成功失败，都清理活跃任务
             self._finish_active_task(event)
+
 
     # ==================== 方案C：确认机制 ====================
     
@@ -4113,27 +3263,23 @@ class MusicPlugin(Star):
     @filter.llm_tool(name="batch_cover")
     async def batch_cover(self, event: AstrMessageEvent,
                          songs: List[str],
-                         api_type: Optional[str] = None,
                          model_index: Optional[int] = None,
-                         key_shift: Optional[int] = None,
-                         music_source: Optional[str] = None) -> str:
-        '''批量翻唱多首歌曲 - 异步后台执行，支持长时间任务！
+                         key_shift: Optional[int] = None) -> str:
+        '''批量 RVC 翻唱多首歌曲 - 异步后台执行，支持长时间任务！
 
         适合说'帮我翻唱这几首歌：《A》《B》《C》'的场景。
-        
+
         重要特性：
             - 异步执行：立即返回确认消息，后台处理翻唱
             - 实时推送：每完成一首歌立即发送音频文件
             - 超时安全：不受60秒工具超时限制
-        
+
         Args:
             songs(list[string]): 要翻唱的歌曲名称列表（必填）
-            api_type(string, optional): 翻唱类型，'rvc'、'svc' 或 'svcvc'
             model_index(number, optional): 统一使用的模型序号
-            key_shift(number, optional): 统一音调值。RVC/SVC 范围 -12 到 12，SoulX-SVCVC 范围 -36 到 36。
+            key_shift(number, optional): 统一音调值，范围 -12 到 12。
                 调用此工具前，你应该分析原曲演唱者性别与目标模型音域的匹配关系（如周杰伦男声→塔菲喵女声）。但分析完成后请不要传入 key_shift，插件会根据分析结果自动应用配置中的升降调值（男→女用 male_to_female_shift，女→男用 female_to_male_shift）。只有当用户明确要求特定数值（如"升3调"）时才传入 key_shift。
-            music_source(string, optional): 音乐源选择，'netease'(网易云) 或 'qqmusic'(QQ音乐)
-        
+
         Returns:
             任务确认信息（实际结果会异步推送到聊天中）
         '''
@@ -4142,12 +3288,10 @@ class MusicPlugin(Star):
             return rejected
         if not self.enable_batch_cover:
             return "批量翻唱功能已在配置中禁用，请逐个使用 smart_cover。"
-        
-        available_engines = self._get_available_engines()
-        
-        if not available_engines:
-            return "❌ 所有翻唱引擎均已禁用，请至少启用 RVC、SVC 或 SoulX-SVCVC 之一。"
-        
+
+        if not self.enable_rvc:
+            return "❌ RVC 功能已在配置中禁用，请先在插件配置里开启 enable_rvc。"
+
         # === 方案B：检查是否有进行中的翻唱任务 ===
         active_task = self._get_active_task_status(event)
         if active_task:
@@ -4159,109 +3303,87 @@ class MusicPlugin(Star):
                 f"已进行：{elapsed}秒\n"
                 f"请等当前任务完成后再发起批量翻唱喵！🐾"
             )
-        
+
         try:
             if not songs or len(songs) == 0:
                 return "歌曲列表为空，请提供至少一首歌名。"
-            
+
             if len(songs) > self.max_batch_size:
                 return f"批量翻唱数量超过限制（最大{self.max_batch_size}首）。当前提供了{len(songs)}首，请分批处理。"
-            
+
             # === 参数解析 ===
-            actual_api_type = api_type or self.default_api_type
-            
-            if actual_api_type and actual_api_type.lower() not in available_engines:
-                return f"⚠️ {actual_api_type.upper()} 引擎已在配置中禁用。\n当前可用的翻唱引擎: {', '.join(available_engines).upper()}\n请指定可用的引擎，例如 api_type='{available_engines[0]}'"
-            
             actual_model_index = model_index or self.default_model_index
             actual_key_shift = (
-                key_shift
-                if key_shift is not None
-                else (None if actual_api_type == "svcvc" else self.default_key_shift)
+                key_shift if key_shift is not None else self.default_key_shift
             )
-            
+
             if self.enable_preference_learning:
                 user_id = self._get_user_id(event)
                 pref = self._get_user_pref(user_id)
-                if not api_type:
-                    actual_api_type = pref.get("default_api_type", actual_api_type)
                 if not model_index:
                     actual_model_index = pref.get("default_model_index", actual_model_index)
                 if key_shift is None:
-                    actual_key_shift = (
-                        None
-                        if actual_api_type == "svcvc"
-                        else pref.get("default_key_shift", actual_key_shift)
-                    )
-            
-            # 偏好加载后可能覆盖了 api_type，需要再次验证可用性
-            if actual_api_type and actual_api_type.lower() not in available_engines:
-                return f"⚠️ {actual_api_type.upper()} 引擎已在配置中禁用。\n当前可用的翻唱引擎: {', '.join(available_engines).upper()}\n请指定可用的引擎，例如 api_type='{available_engines[0]}'"
-            
+                    actual_key_shift = pref.get("default_key_shift", actual_key_shift)
+
             # 配置下拉选的默认音色：用户没显式指定序号时优先用它
             if not model_index:
-                configured_default_index = self._configured_rvc_model_index(actual_api_type)
+                configured_default_index = self._configured_rvc_model_index()
                 if configured_default_index:
                     actual_model_index = configured_default_index
-            
-            actual_music_source = self._resolve_music_source(music_source)
 
             # 注册活跃任务
             batch_song_names = "、".join(songs[:3])
             if len(songs) > 3:
                 batch_song_names += f" 等{len(songs)}首"
-            if not self._register_active_task(event, f"[批量]{batch_song_names}", actual_api_type):
+            if not self._register_active_task(event, f"[批量]{batch_song_names}"):
                 return "⏳ 当前已有翻唱任务，请等待完成或先调用 cancel_cover_task。"
-            
+
             # === 创建后台任务（异步执行）===
             task = self._create_tracked_task(
                 self._execute_batch_cover_async(
                     event=event,
                     songs=songs,
-                    api_type=actual_api_type,
                     model_index=actual_model_index,
                     key_shift=actual_key_shift,
-                    music_source=actual_music_source
                 )
             )
             self._bind_active_asyncio_task(event, task)
-            
+
             # === 立即返回确认消息（不会被超时取消）===
-            report_shift = self._effective_key_shift(actual_api_type, actual_key_shift)
+            report_shift = int(actual_key_shift or 0)
             confirm_msg = (
                 f"📦 已接收批量翻唱任务！共 {len(songs)} 首歌曲\n"
-                f"⚙️ 配置：{self._engine_display_name(actual_api_type)} / 第{actual_model_index}个模型 / 音调{report_shift:+d}\n"
+                f"⚙️ 配置：RVC / 第{actual_model_index}个模型 / 音调{report_shift:+d}\n"
                 f"⏳ 正在后台处理中，请稍候...\n"
                 f"💡 每完成一首会自动发送音频，最后发送汇总报告"
             )
-            
+
             return confirm_msg
-            
+
         except Exception as e:
             logger.error(traceback.format_exc())
             return f"批量翻唱启动失败: {e}"
 
+
     async def _execute_batch_cover_async(self, event: AstrMessageEvent,
                                         songs: List[str],
-                                        api_type: str,
                                         model_index: int,
-                                        key_shift: Optional[int],
-                                        music_source: str = None):
+                                        key_shift: Optional[int]):
         """异步执行批量翻唱（后台任务）"""
         try:
             results = []
             success_count = 0
             fail_count = 0
-            
+
             for idx, song_name in enumerate(songs, 1):
                 try:
                     # 进度提示走统一出口（默认静音，由 notify_progress 控制）
                     await self.outbound.say(
                         event, "progress", song=song_name, count=idx, total=len(songs)
                     )
-                    
+
                     # 执行翻唱
-                    result = await self._do_cover(event, song_name, api_type, model_index, key_shift, music_source) or ""
+                    result = await self._do_cover(event, song_name, model_index, key_shift) or ""
                     # 与 _smart_cover_async 保持一致：只认明确的失败标记，不用关键词猜
                     is_failed = result.startswith("❌") or result.startswith("FAIL:")
                     if is_failed:
@@ -4277,11 +3399,11 @@ class MusicPlugin(Star):
                     else:
                         results.append(f"✅ [{idx}/{len(songs)}] 《{song_name}》：成功")
                         success_count += 1
-                    
+
                     # 歌间延迟避免过快请求
                     if idx < len(songs):
                         await asyncio.sleep(2)
-                        
+
                 except asyncio.CancelledError:
                     results.append(f"❌ [{idx}/{len(songs)}] 《{song_name}》：被取消")
                     fail_count += 1
@@ -4292,7 +3414,7 @@ class MusicPlugin(Star):
                         f"❌ [{idx}/{len(songs)}] 《{song_name}》：这首没做成"
                     )
                     fail_count += 1
-            
+
             # === 生成并发送汇总报告 ===
             summary_lines = [
                 "",
@@ -4305,31 +3427,31 @@ class MusicPlugin(Star):
                 f"❌ 失败: {fail_count} 首",
                 "",
                 f"使用的配置:",
-                f"  类型: {api_type.upper()}",
+                f"  引擎: RVC",
                 f"  模型: 第{model_index}个",
-                f"  音调: {key_shift:+d}",
+                f"  音调: {int(key_shift or 0):+d}",
                 "",
                 "-" * 50,
                 "详细结果:",
             ]
-            
+
             summary_lines.extend(results)
-            
+
             summary_lines.extend([
                 "",
                 "=" * 50,
                 f"完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
                 "=" * 50
             ])
-            
+
             final_report = "\n".join(summary_lines)
-            
+
             # 发送汇总报告
             try:
                 await event.send(event.plain_result(final_report))
             except Exception as e:
                 logger.error(f"发送批量翻唱报告失败: {e}")
-                
+
             # === LLM 成功通知机制 ===
             if getattr(self, "enable_llm_success_notify", True) and success_count > 0:
                 try:
@@ -4341,7 +3463,7 @@ class MusicPlugin(Star):
                             await event.send(event.plain_result(llm_resp.completion_text))
                 except Exception as llm_e:
                     logger.error(f"通知 LLM 失败: {llm_e}")
-                
+
         except Exception as e:
             logger.error(traceback.format_exc())
             # 技术细节只进日志，报告里只说一句人话
@@ -4354,6 +3476,7 @@ class MusicPlugin(Star):
             # 方案B：批量任务结束后清理活跃任务
             self._finish_active_task(event)
 
+
     # ==================== 方案E：偏好学习与推荐系统 ====================
     
     @filter.llm_tool(name="save_preference")
@@ -4363,69 +3486,62 @@ class MusicPlugin(Star):
         '''保存用户的偏好设置 - 让AI记住你的喜好！
 
         可以保存常用的模型、音调等设置，下次翻唱时自动应用。
-        
+
         Args:
             preference_type(string): 偏好类型：
-                - 'api_type': 默认翻唱类型 ('rvc'、'svc' 或 'svcvc')
                 - 'model_index': 默认模型序号 (数字字符串)
-                - 'key_shift': 默认音调调整（RVC/SVC 为 -12到12，SoulX-SVCVC 为 -36到36）
+                - 'key_shift': 默认音调调整（-12 到 12）
             value(string): 偏好值（统一使用字符串传入，系统会自动转换）
-        
+
         Returns:
             保存结果确认
         '''
         if not self.enable_preference_learning:
             return "偏好学习功能已在配置中禁用。"
-        
+
         try:
             user_id = self._get_user_id(event)
             pref = self._get_user_pref(user_id)
-            
+
             valid_types = {
-                "api_type": {"type": str, "valid_values": ["rvc", "svc", "svcvc"]},
                 "model_index": {"type": int, "min": 1},
-                "key_shift": {"type": int, "min": -36, "max": 36}
+                "key_shift": {"type": int, "min": -12, "max": 12}
             }
-            
+
             if preference_type not in valid_types:
                 return f"无效的偏好类型: {preference_type}\n支持的类型: {', '.join(valid_types.keys())}"
-            
+
             type_info = valid_types[preference_type]
             target_type = type_info["type"]
-            
+
             try:
                 converted_value = target_type(value)
             except (ValueError, TypeError):
                 return f"无法将值 '{value}' 转换为 {target_type.__name__} 类型"
 
-            if preference_type == "key_shift":
-                preferred_engine = pref.get("default_api_type", self.default_api_type)
-                min_shift, max_shift = self._key_shift_range(preferred_engine)
-                type_info = {**type_info, "min": min_shift, "max": max_shift}
-            
             if "valid_values" in type_info and converted_value not in type_info["valid_values"]:
                 return f"无效的值: {converted_value}，可选值: {type_info['valid_values']}"
-            
+
             if "min" in type_info and converted_value < type_info["min"]:
                 return f"值太小: {converted_value}，最小值为 {type_info['min']}"
-            
+
             if "max" in type_info and converted_value > type_info["max"]:
                 return f"值太大: {converted_value}，最大值为 {type_info['max']}"
-            
+
             pref[f"default_{preference_type}"] = converted_value
             await self._save_preferences()
-            
+
             type_display = {
-                "api_type": f"默认翻唱类型 → {self._engine_display_name(converted_value)}",
                 "model_index": f"默认模型 → 第{converted_value}个",
                 "key_shift": f"默认音调 → {converted_value:+d}"
             }
-            
+
             return f"✅ 偏好已保存！\n{type_display.get(preference_type, preference_type)}\n\n下次翻唱时会自动使用此设置。如需修改，随时告诉我！"
-            
+
         except Exception as e:
             logger.error(traceback.format_exc())
             return f"保存偏好时出错: {e}"
+
 
     @filter.llm_tool(name="get_recommendation")
     async def get_recommendation(self, event: AstrMessageEvent,
@@ -4460,19 +3576,16 @@ class MusicPlugin(Star):
             
             if usage_count == 0:
                 recommendation.append(f"\n💡 您还没有使用过翻唱功能，将使用系统默认配置：")
-                recommendation.append(f"   - 类型: {self.default_api_type.upper()}")
                 recommendation.append(f"   - 模型: 第{self.default_model_index}个")
                 recommendation.append(f"   - 音调: {self.default_key_shift:+d}")
                 return "\n".join(recommendation)
-            
+
             # === 推荐配置 ===
-            rec_api_type = pref.get("default_api_type", self.default_api_type)
             rec_model_index = pref.get("default_model_index", self.default_model_index)
             rec_key_shift = pref.get("default_key_shift", self.default_key_shift)
             last_model = pref.get("last_used_model", "未知")
             
             recommendation.append(f"\n⭐ 推荐配置：")
-            recommendation.append(f"   🎵 翻唱类型: {rec_api_type.upper()}")
             recommendation.append(f"   🎤 模型选择: 第{rec_model_index}个 ({last_model})")
             recommendation.append(f"   🎼 音调调整: {rec_key_shift:+d}")
             
@@ -4530,7 +3643,6 @@ class MusicPlugin(Star):
             recommendation.append(f"   我会自动应用以上推荐的配置！")
             recommendation.append(f"\n⚙️ 如需修改偏好，可以说：")
             recommendation.append(f"   - '把默认模型改成第2个'")
-            recommendation.append(f"   - '以后都用SVC翻唱'")
             recommendation.append(f"   - '默认升2调'")
             
             return "\n".join(recommendation)
@@ -4570,16 +3682,13 @@ class MusicPlugin(Star):
             
             # === 当前偏好 ===
             stats.append(f"\n⚙️ 当前偏好设置：")
-            stats.append(f"   默认类型: {pref.get('default_api_type', '未设置').upper()}")
             stats.append(f"   默认模型: 第{pref.get('default_model_index', '未设置')}个")
             stats.append(f"   默认音调: {pref.get('default_key_shift', '未设置'):+d}" if isinstance(pref.get('default_key_shift'), int) else "   默认音调: 未设置")
             
             # === 上次使用 ===
             last_model = pref.get("last_used_model", "无")
-            last_api = pref.get("last_used_api_type", "无")
             stats.append(f"\n🎯 上次使用：")
             stats.append(f"   模型: {last_model}")
-            stats.append(f"   类型: {last_api.upper()}")
             
             # === 收藏歌曲 ===
             favorite_songs = pref.get("favorite_songs", [])
@@ -4655,30 +3764,63 @@ class MusicPlugin(Star):
 
     # ==================== 本地音频翻唱 LLM 工具 ====================
     
+    async def _resolve_local_audio_shift(
+        self,
+        audio_path: str,
+        model_display: str,
+        key_shift: Optional[int],
+        event: AstrMessageEvent,
+    ) -> tuple[int, Optional[int], str]:
+        """本地音频的升降调：LLM 传入 → LLM 推断 → 本地推断 → 默认配置。
+
+        Returns:
+            ``(最终音调, 推断出来的音调或 None, 来源说明)``。
+        """
+        if key_shift is not None:
+            return key_shift, None, "LLM传入"
+
+        if self.enable_auto_key_shift:
+            filename_base = os.path.splitext(os.path.basename(audio_path))[0]
+            # 清理常见后缀：_EM, _cover, _RVC, (Live), [HQ] 等
+            song_name = re.sub(r'[_\-\s]*(?:cover|rvc|em|ai|remix|inst|伴奏|翻唱|完整版|live|现场|mv|hq|flac|mp3|wav| instrumental)?\s*$', '', filename_base, flags=re.I).strip()
+            song_gender, model_gender = await self._detect_gender_pair(
+                song_name, model_display, event, source_is_song=True
+            )
+            if song_gender and model_gender:
+                shifted = await self._calc_auto_key_shift(
+                    song_name, model_display, 0, song_gender, model_gender, event
+                )
+                logger.info(f"[MatsukoCover] LLM自动推断音调: key_shift={shifted} (歌曲: {song_name}, 模型: {model_display})")
+                return shifted, shifted, "LLM推断"
+
+        inferred = self._infer_key_shift_from_filename(audio_path, model_display)
+        if inferred is not None:
+            logger.info(f"[MatsukoCover] 本地推断音调: key_shift={inferred} (文件: {os.path.basename(audio_path)}, 模型: {model_display})")
+            return inferred, inferred, "本地推断"
+        return self.default_key_shift, None, "默认配置"
+
     @filter.llm_tool(name="cover_absolute_path_audio")
     async def cover_absolute_path_audio(self, event: AstrMessageEvent,
                                          audio_path: str,
                                          model_name: Optional[str] = None,
                                          model_index: Optional[int] = None,
-                                         api_type: Optional[str] = None,
                                          key_shift: Optional[int] = None) -> str:
-        '''将指定绝对路径的音频文件进行AI翻唱/音色转换。
-        
+        '''将指定绝对路径的音频文件进行 RVC 翻唱/音色转换。
+
         当配合其他插件（如 ide_sandbox）获取到了本地文件的绝对路径，并且用户要求对其进行翻唱时使用此工具。
         注意：只能处理本机确实存在的音频文件路径。
-        
+
         【关于音调调整】
         如果你不确定应该升调还是降调，请不要传入 key_shift 参数，插件会根据歌曲和模型的匹配关系自动推断最佳音调。
         只有当用户明确要求特定音调（如"升3调"、"降2调"）时，才需要传入 key_shift。
-        
+
         Args:
             audio_path(string): 必须是音频文件的完整绝对路径（如 C:\\path\\to\\audio.mp3）
             model_name(string, optional): 模型名称或别名（支持模糊匹配）。不指定则使用默认模型
             model_index(number, optional): 模型序号（从1开始）。不指定则使用默认模型
-            api_type(string, optional): 翻唱类型，'rvc'、'svc' 或 'svcvc'。不指定则使用默认配置
-            key_shift(number, optional): 音调调整。RVC/SVC 范围 -12 到 12，SoulX-SVCVC 范围 -36 到 36；不指定则使用默认配置。
+            key_shift(number, optional): 音调调整，范围 -12 到 12；不指定则使用默认配置。
                 调用此工具前，你应该分析原曲演唱者性别与目标模型音域的匹配关系（如周杰伦男声→塔菲喵女声）。但分析完成后请不要传入 key_shift，插件会根据分析结果自动应用配置中的升降调值（男→女用 male_to_female_shift，女→男用 female_to_male_shift）。只有当用户明确要求特定数值（如"升3调"）时才传入 key_shift。
-        
+
         Returns:
             处理结果的描述信息（异步执行，完成后自动发送音频）
         '''
@@ -4687,125 +3829,77 @@ class MusicPlugin(Star):
             return rejected
         if not self.enable_local_audio_cover:
             return "❌ 本地音频翻唱功能未启用。"
-            
+
         if not audio_path or not os.path.exists(audio_path) or not os.path.isfile(audio_path):
             return f"❌ 提供的文件路径无效或文件不存在: {audio_path}"
-            
+
         if not self._is_audio_file(audio_path):
             return f"❌ 提供的文件不是受支持的音频格式: {audio_path}"
-            
+
         size_mb = os.path.getsize(audio_path) / (1024 * 1024)
         if size_mb > self.max_local_audio_size_mb:
             return f"❌ 音频文件过大 ({size_mb:.1f}MB)，超过限制 {self.max_local_audio_size_mb}MB。"
-            
-        actual_api_type = str(api_type or self.default_api_type).lower()
-        
-        available_engines = self._get_available_engines()
-        
-        if actual_api_type not in available_engines:
-            return f"⚠️ {actual_api_type.upper()} 引擎已禁用。当前可用: {', '.join(available_engines).upper()}"
-        
+
+        if not self.enable_rvc:
+            return "❌ RVC 功能已在配置中禁用。"
+
         actual_model_index = model_index
         actual_model_display = ""
         if model_name:
-            matched = self._find_model_index_by_name(model_name, actual_api_type)
+            matched = self._find_model_index_by_name(model_name)
             if matched:
                 actual_model_index = matched
             else:
-                available = await self.get_available_models(event, actual_api_type)
+                available = await self.get_available_models(event)
                 return f"❌ 未找到匹配的模型: '{model_name}'\n\n可用模型:\n{available}"
-        
+
         # 没显式指定序号时，优先用配置下拉选的默认 RVC 音色
         if actual_model_index is None:
-            actual_model_index = self._configured_rvc_model_index(actual_api_type) or 1
-        
-        models_info = self.get_models_detailed_list(actual_api_type)
+            actual_model_index = self._configured_rvc_model_index() or 1
+
+        models_info = self.get_models_detailed_list()
         for m in models_info:
             if m["index"] == actual_model_index:
                 actual_model_display = m["display"]
                 break
-        
-        # key_shift 处理优先级：LLM 传入 → LLM自动升降调 → 本地推断 → 默认配置
-        inferred_key_shift = None
-        inference_source = ""
-        if key_shift is not None:
-            actual_key_shift = key_shift
-            inference_source = "LLM传入"
-        elif actual_api_type == "svcvc":
-            actual_key_shift = None
-            inference_source = "SoulX自动音域/插件配置"
-        else:
-            # Step 1: 优先用LLM判断歌曲性别和模型性别
-            if self.enable_auto_key_shift:
-                filename_base = os.path.splitext(os.path.basename(audio_path))[0]
-                # 清理常见后缀：_EM, _cover, _RVC, (Live), [HQ] 等
-                song_name = re.sub(r'[_\-\s]*(?:cover|rvc|svc|em|ai|remix|inst|伴奏|翻唱|完整版|live|现场|mv|hq|flac|mp3|wav| instrumental)?\s*$', '', filename_base, flags=re.I).strip()
-                
-                song_gender, model_gender = await self._detect_gender_pair(
-                    song_name, actual_model_display, event, source_is_song=True
-                )
-                
-                if song_gender and model_gender:
-                    actual_key_shift = await self._calc_auto_key_shift(song_name, actual_model_display, 0, song_gender, model_gender, event)
-                    inferred_key_shift = actual_key_shift
-                    inference_source = "LLM推断"
-                    logger.info(f"[MatsukoCover] LLM自动推断音调: key_shift={actual_key_shift} (歌曲: {song_name}, 模型: {actual_model_display})")
-                else:
-                    # LLM 判断失败，尝试本地推断兜底
-                    inferred = self._infer_key_shift_from_filename(audio_path, actual_model_display)
-                    if inferred is not None:
-                        actual_key_shift = inferred
-                        inferred_key_shift = inferred
-                        inference_source = "本地推断"
-                        logger.info(f"[MatsukoCover] 本地推断音调: key_shift={inferred} (文件: {os.path.basename(audio_path)}, 模型: {actual_model_display})")
-                    else:
-                        actual_key_shift = self.default_key_shift
-                        inference_source = "默认配置"
-            else:
-                # Step 2: 未启用自动升降调时，尝试本地推断
-                inferred = self._infer_key_shift_from_filename(audio_path, actual_model_display)
-                if inferred is not None:
-                    actual_key_shift = inferred
-                    inferred_key_shift = inferred
-                    inference_source = "本地推断"
-                    logger.info(f"[MatsukoCover] 本地推断音调: key_shift={inferred} (文件: {os.path.basename(audio_path)}, 模型: {actual_model_display})")
-                else:
-                    actual_key_shift = self.default_key_shift
-                    inference_source = "默认配置"
-        
+
+        actual_key_shift, inferred_key_shift, inference_source = (
+            await self._resolve_local_audio_shift(
+                audio_path, actual_model_display, key_shift, event
+            )
+        )
+
         self._create_tracked_task(self._execute_local_cover(
             event, audio_path,
             model_name=None, model_index=actual_model_index,
-            api_type=actual_api_type, key_shift=actual_key_shift
+            key_shift=actual_key_shift
         ))
-        
-        display_shift = self._effective_key_shift(actual_api_type, actual_key_shift)
-        shift_info = f" | 升降调: {display_shift:+d}"
+
+        shift_info = f" | 升降调: {int(actual_key_shift or 0):+d}"
         if inferred_key_shift is not None:
             shift_info += f" ({inference_source})"
-        return f"🎵 正在用【{actual_model_display}】({actual_api_type.upper()}) 处理文件 {os.path.basename(audio_path)}{shift_info}... 请稍候，处理完成后会自动发送！"
+        return f"🎵 正在用【{actual_model_display}】(RVC) 处理文件 {os.path.basename(audio_path)}{shift_info}... 请稍候，处理完成后会自动发送！"
+
 
     @filter.llm_tool(name="cover_local_audio")
     async def cover_local_audio(self, event: AstrMessageEvent,
                                  model_name: Optional[str] = None,
                                  model_index: Optional[int] = None,
-                                 api_type: Optional[str] = None,
                                  key_shift: Optional[int] = None) -> str:
-        '''将用户发送的本地音频文件或语音消息进行AI翻唱/音色转换。
-        
+        '''将用户发送的本地音频文件或语音消息进行 RVC 翻唱/音色转换。
+
         当用户发送了语音或音频文件并要求"翻唱这个"、"把我的声音变成塔菲"、"修音"时使用此工具。
-        
+
         【关于音调调整】
         如果你不确定应该升调还是降调，请不要传入 key_shift 参数，插件会根据歌曲和模型的匹配关系自动推断最佳音调。
         只有当用户明确要求特定音调（如"升3调"、"降2调"）时，才需要传入 key_shift。
-        
+
         Args:
             model_name(string, optional): 模型名称或别名（支持模糊匹配）。不指定则使用默认模型
             model_index(number, optional): 模型序号（从1开始）。不指定则使用默认模型
-            api_type(string, optional): 翻唱类型，'rvc'、'svc' 或 'svcvc'。不指定则使用默认配置
-            key_shift(number, optional): 音调调整。RVC/SVC 范围 -12 到 12，SoulX-SVCVC 范围 -36 到 36；不指定则使用默认配置。
+            key_shift(number, optional): 音调调整，范围 -12 到 12；不指定则使用默认配置。
                 调用此工具前，你应该分析原曲演唱者性别与目标模型音域的匹配关系（如周杰伦男声→塔菲喵女声）。但分析完成后请不要传入 key_shift，插件会根据分析结果自动应用配置中的升降调值（男→女用 male_to_female_shift，女→男用 female_to_male_shift）。只有当用户明确要求特定数值（如"升3调"）时才传入 key_shift。
-        
+
         Returns:
             处理结果的描述信息（异步执行，完成后自动发送音频）
         '''
@@ -4814,9 +3908,9 @@ class MusicPlugin(Star):
             return rejected
         if not self.enable_local_audio_cover:
             return "❌ 本地音频翻唱功能未启用。"
-        
+
         audio_path = await self._extract_audio_from_event(event)
-        
+
         if not audio_path:
             await self._cleanup_expired_audio_cache()
             cached = self._recent_audio_cache.get(str(event.unified_msg_origin))
@@ -4824,93 +3918,47 @@ class MusicPlugin(Star):
                 audio_path = cached[0]
             else:
                 return "❌ 未检测到音频文件或语音消息。请用户先发送要处理的音频文件或语音，然后再调用此工具。"
-        
-        actual_api_type = str(api_type or self.default_api_type).lower()
-        
-        available_engines = self._get_available_engines()
-        
-        if actual_api_type not in available_engines:
-            return f"⚠️ {actual_api_type.upper()} 引擎已禁用。当前可用: {', '.join(available_engines).upper()}"
-        
+
+        if not self.enable_rvc:
+            return "❌ RVC 功能已在配置中禁用。"
+
         actual_model_index = model_index
         actual_model_display = ""
         if model_name:
-            matched = self._find_model_index_by_name(model_name, actual_api_type)
+            matched = self._find_model_index_by_name(model_name)
             if matched:
                 actual_model_index = matched
             else:
-                available = await self.get_available_models(event, actual_api_type)
+                available = await self.get_available_models(event)
                 return f"❌ 未找到匹配的模型: '{model_name}'\n\n可用模型:\n{available}"
-        
+
         # 没显式指定序号时，优先用配置下拉选的默认 RVC 音色
         if actual_model_index is None:
-            actual_model_index = self._configured_rvc_model_index(actual_api_type) or 1
-        
-        models_info = self.get_models_detailed_list(actual_api_type)
+            actual_model_index = self._configured_rvc_model_index() or 1
+
+        models_info = self.get_models_detailed_list()
         for m in models_info:
             if m["index"] == actual_model_index:
                 actual_model_display = m["display"]
                 break
-        
-        # key_shift 处理优先级：LLM 传入 → LLM自动升降调 → 本地推断 → 默认配置
-        inferred_key_shift = None
-        inference_source = ""
-        if key_shift is not None:
-            actual_key_shift = key_shift
-            inference_source = "LLM传入"
-        elif actual_api_type == "svcvc":
-            actual_key_shift = None
-            inference_source = "SoulX自动音域/插件配置"
-        else:
-            # Step 1: 优先用LLM判断歌曲性别和模型性别
-            if self.enable_auto_key_shift:
-                filename_base = os.path.splitext(os.path.basename(audio_path))[0]
-                # 清理常见后缀：_EM, _cover, _RVC, (Live), [HQ] 等
-                song_name = re.sub(r'[_\-\s]*(?:cover|rvc|svc|em|ai|remix|inst|伴奏|翻唱|完整版|live|现场|mv|hq|flac|mp3|wav| instrumental)?\s*$', '', filename_base, flags=re.I).strip()
-                
-                song_gender, model_gender = await self._detect_gender_pair(
-                    song_name, actual_model_display, event, source_is_song=True
-                )
-                
-                if song_gender and model_gender:
-                    actual_key_shift = await self._calc_auto_key_shift(song_name, actual_model_display, 0, song_gender, model_gender, event)
-                    inferred_key_shift = actual_key_shift
-                    inference_source = "LLM推断"
-                    logger.info(f"[MatsukoCover] LLM自动推断音调: key_shift={actual_key_shift} (歌曲: {song_name}, 模型: {actual_model_display})")
-                else:
-                    # LLM 判断失败，尝试本地推断兜底
-                    inferred = self._infer_key_shift_from_filename(audio_path, actual_model_display)
-                    if inferred is not None:
-                        actual_key_shift = inferred
-                        inferred_key_shift = inferred
-                        inference_source = "本地推断"
-                        logger.info(f"[MatsukoCover] 本地推断音调: key_shift={inferred} (文件: {os.path.basename(audio_path)}, 模型: {actual_model_display})")
-                    else:
-                        actual_key_shift = self.default_key_shift
-                        inference_source = "默认配置"
-            else:
-                # Step 2: 未启用自动升降调时，尝试本地推断
-                inferred = self._infer_key_shift_from_filename(audio_path, actual_model_display)
-                if inferred is not None:
-                    actual_key_shift = inferred
-                    inferred_key_shift = inferred
-                    inference_source = "本地推断"
-                    logger.info(f"[MatsukoCover] 本地推断音调: key_shift={inferred} (文件: {os.path.basename(audio_path)}, 模型: {actual_model_display})")
-                else:
-                    actual_key_shift = self.default_key_shift
-                    inference_source = "默认配置"
-        
+
+        actual_key_shift, inferred_key_shift, inference_source = (
+            await self._resolve_local_audio_shift(
+                audio_path, actual_model_display, key_shift, event
+            )
+        )
+
         self._create_tracked_task(self._execute_local_cover(
             event, audio_path,
             model_name=None, model_index=actual_model_index,
-            api_type=actual_api_type, key_shift=actual_key_shift
+            key_shift=actual_key_shift
         ))
-        
-        display_shift = self._effective_key_shift(actual_api_type, actual_key_shift)
-        shift_info = f" | 升降调: {display_shift:+d}"
+
+        shift_info = f" | 升降调: {int(actual_key_shift or 0):+d}"
         if inferred_key_shift is not None:
             shift_info += f" ({inference_source})"
-        return f"🎵 正在用【{actual_model_display}】({actual_api_type.upper()}) 处理您的音频{shift_info}... 请稍候，处理完成后会自动发送！"
+        return f"🎵 正在用【{actual_model_display}】(RVC) 处理您的音频{shift_info}... 请稍候，处理完成后会自动发送！"
+
 
     # ==================== 方案A+B：任务状态查询与取消 ====================
     
@@ -4937,7 +3985,6 @@ class MusicPlugin(Star):
         return (
             f"⏳ 有翻唱任务正在进行中nya～\n"
             f"歌曲：《{active_task['song_name']}》\n"
-            f"引擎：{active_task['api_type'].upper()}\n"
             f"模型：{active_task.get('model_display', '未知')}\n"
             f"状态：{active_task['status']}\n"
             f"已进行：{time_str}\n"
@@ -5016,13 +4063,13 @@ class MusicPlugin(Star):
         '''监听包含音频的消息，自动触发本地翻唱'''
         if not self.enable_local_audio_cover:
             return
-        
+
         msg_text = event.message_str.strip()
-        
+
         # 排除命令消息（让命令处理器自己处理）
         if msg_text.startswith("/") or msg_text.startswith("\\"):
             return
-        
+
         # 始终尝试提取并缓存音频（无论是否有触发词，方便后续 /本地翻唱 命令使用）
         audio_path = await self._extract_audio_from_event(event)
         if audio_path:
@@ -5030,7 +4077,7 @@ class MusicPlugin(Star):
                 self._recent_audio_cache[str(event.unified_msg_origin)] = (audio_path, time.time())
             await self._cleanup_expired_audio_cache()
             logger.info(f"[LocalAudio] 已缓存音频: {audio_path}")
-        
+
         # 检查是否触发自动翻唱
         if not self.local_audio_auto_trigger:
             return
@@ -5043,7 +4090,7 @@ class MusicPlugin(Star):
 
         # 检查消息文字是否包含触发关键词
         has_trigger = any(kw in msg_text for kw in self.local_audio_trigger_keywords)
-        
+
         # 如果文字没有触发，检查文件名是否包含触发关键词（如上传"处理.mp3"）
         if not has_trigger:
             for comp in getattr(event.message_obj, "message", []):
@@ -5053,55 +4100,37 @@ class MusicPlugin(Star):
                         has_trigger = True
                         logger.info(f"[LocalAudio] 文件名 '{file_name}' 匹配触发关键词")
                         break
-        
+
         if not has_trigger:
             return
-        
+
         if not audio_path:
             logger.info("[LocalAudio] 消息含触发词但无音频，跳过")
             return
-        
-        # 解析参数
+
+        # 解析参数：只认「模型名/序号」和「升降调」，引擎固定 RVC
         words = msg_text.replace("，", " ").replace(",", " ").replace("。", " ").split()
         model_name = self.local_audio_default_model if self.local_audio_default_model else None
-        api_type = self.default_api_type
         key_shift = self.local_audio_default_shift
-        key_shift_specified = False
-        
+
         for w in words:
-            if w.lstrip('-').isdigit() and -36 <= int(w) <= 36:
+            if w.lstrip('-').isdigit() and -12 <= int(w) <= 12:
                 key_shift = int(w)
-                key_shift_specified = True
-            elif w.lower() in ("rvc", "svc", "svcvc"):
-                api_type = w.lower()
             elif w not in self.local_audio_trigger_keywords and len(w) >= 2:
                 model_name = w
-        
-        # 引擎可用性检查与回退
-        if not self._is_engine_enabled(api_type):
-            available_engines = self._get_available_engines()
-            api_type = available_engines[0] if available_engines else None
-        
-        if not api_type:
-            return
 
-        # SoulX-SVCVC has its own configured pitch.  Do not accidentally
-        # override it with the legacy local-audio RVC/SVC default unless the
-        # user explicitly supplied a numeric shift in this message.
-        if api_type == "svcvc" and not key_shift_specified:
-            key_shift = None
-        
         # 验证模型名，不匹配则使用默认
         if model_name:
-            matched = self._find_model_index_by_name(model_name, api_type)
+            matched = self._find_model_index_by_name(model_name)
             if not matched:
                 model_name = None
-        
+
         # 后台执行，不阻塞事件传播
         self._create_tracked_task(self._execute_local_cover(
-            event, audio_path, model_name, api_type=api_type, key_shift=key_shift
+            event, audio_path, model_name, key_shift=key_shift
         ))
-    
+
+
     async def terminate(self):
         """插件卸载时清理资源"""
         logger.info("[MatsukoCover] 正在清理资源...")
@@ -5138,10 +4167,4 @@ class MusicPlugin(Star):
         except Exception as e:
             logger.debug(f"[MatsukoCover] 关闭取歌 session: {e}")
 
-        try:
-            if hasattr(self, 'api') and self.api:
-                await self.api.close()
-        except Exception as e:
-            logger.debug(f"[MatsukoCover] 关闭API session: {e}")
-        
         logger.info("[MatsukoCover] 资源清理完成")

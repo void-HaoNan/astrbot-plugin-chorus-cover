@@ -5,62 +5,6 @@
     "hint": "你的 Gradio API RVC 后端运行的地址，必须以 / 结尾",
     "default": "http://127.0.0.1:3333/"
   },
-  "svc_base_url": {
-    "description": "SVC API Gradio 后端服务地址",
-    "type": "string",
-    "hint": "旧 SVC-Fusion 中间层地址，必须以 / 结尾；与 SoulX-SVCVC 不同",
-    "default": "http://127.0.0.1:9999/"
-  },
-  "svcvc_base_url": {
-    "description": "SoulX-SVCVC 中间层地址",
-    "type": "string",
-    "hint": "SVCVC-API 的 Gradio 地址，默认端口 6767，必须以 / 结尾。它会调用 SoulX-Singer 的 7861 端口。",
-    "default": "http://127.0.0.1:6767/"
-  },
-  "default_api": {
-    "description": "默认使用的音乐 API",
-    "type": "string",
-    "hint": "0.3.0 起只支持网易云：'netease' 走官方接口直连，'netease_nodejs' 走 Node.js 中转；填 'qqmusic' 或其它值一律按网易云处理（QQ 音源已下线）。",
-    "default": "netease_nodejs"
-  },
-  "nodejs_base_url": {
-    "description": "网易云音乐 Node.js API 地址",
-    "type": "string",
-    "hint": "仅在 default_api 设置为 'netease_nodejs' 时生效",
-    "default": "https://wyy.xhily.com"
-  },
-  "enable_qqmusic": {
-    "description": "启用QQ音乐搜索功能（已下线，不再生效）",
-    "type": "bool",
-    "hint": "QQ 音源已于 0.3.0 下线，此项保留只为兼容旧配置，开关无论怎么写都不会再搜 QQ 音乐。",
-    "default": false
-  },
-  "qqmusic_retry_on_ratelimit": {
-    "description": "QQ音乐触发风控时自动重试（已下线，不再生效）",
-    "type": "bool",
-    "hint": "QQ 音源已下线，此项保留只为兼容旧配置，不再有任何效果。",
-    "default": false
-  },
-  "qqmusic_retry_max_attempts": {
-    "description": "QQ音乐风控重试最大次数（已下线，不再生效）",
-    "type": "int",
-    "hint": "QQ 音源已下线，此项保留只为兼容旧配置，不再有任何效果。",
-    "default": 3,
-    "minimum": 1,
-    "maximum": 10
-  },
-  "disable_netease": {
-    "description": "禁用网易云音乐搜歌（兼容项，已无效）",
-    "type": "bool",
-    "hint": "0.7.0 起音源由 source_order 控制：想跳过网易云，把 source_order 里的 netease 删掉即可。此开关只为兼容旧配置保留，改它不会生效。",
-    "default": false
-  },
-  "disable_qqmusic": {
-    "description": "只用网易云搜歌（兼容项，已无效）",
-    "type": "bool",
-    "hint": "0.7.0 起是否用 QQ 音乐由 source_order 决定（默认排第四）。此开关只为兼容旧配置保留，改它不会生效。",
-    "default": true
-  },
   "netease_cookie": {
     "description": "网易云 MUSIC_U（备用取歌路径用）",
     "type": "string",
@@ -142,29 +86,11 @@
     "hint": "等待后端完成音频转换的最大时间，如果经常超时可以调大这个值",
     "default": 300
   },
-  "llm_tool_timeout": {
-    "description": "LLM工具调用超时时间（秒）",
-    "type": "int",
-    "hint": "LLM调用翻唱工具的最大等待时间。由于翻唱采用异步模式，此值建议设为5-10秒让LLM快速收到'正在处理'的响应。设为0则使用系统默认值(60秒)。",
-    "default": 10
-  },
   "enable_rvc": {
     "description": "启用RVC推理引擎",
     "type": "bool",
-    "hint": "开启后允许使用RVC模型进行翻唱（包括命令 /rvc、LLM 工具 rvc_cover、smart_cover指定rvc等）。关闭后所有RVC相关功能将被禁用，LLM会收到明确提示并建议使用SVC。",
+    "hint": "开启后允许使用 RVC 模型翻唱（命令 /rvc、LLM 工具 rvc_cover / smart_cover、本地音频翻唱）。关闭后这些入口都会提示功能已关闭。",
     "default": true
-  },
-  "enable_svc": {
-    "description": "启用旧 SVC-Fusion 推理引擎",
-    "type": "bool",
-    "hint": "开启后允许使用旧 SVC-Fusion 模型翻唱，包括 /svc 和 svc_cover；它不是 SoulX-SVCVC。",
-    "default": true
-  },
-  "enable_svcvc": {
-    "description": "启用 SoulX-SVCVC 参考音色转换",
-    "type": "bool",
-    "hint": "开启后允许使用 /svcvc、svcvc_cover、smart_cover 和本地音频入口调用 SoulX-Singer SVC Voice Conversion。",
-    "default": false
   },
   "rvc_models_keywords": {
     "description": "RVC 模型别名配置",
@@ -172,84 +98,10 @@
     "hint": "这是一个列表，每行一个模型。格式为 '模型文件名|||别名'。使用 /刷新rvc模型 命令自动获取",
     "default": []
   },
-  "svc_models_keywords": {
-    "description": "旧 SVC-Fusion 模型别名配置",
-    "type": "list",
-    "hint": "这是一个列表，每行一个模型。格式为 '模型文件名|||别名'。使用 /刷新svc模型 命令自动获取",
-    "default": []
-  },
-  "svcvc_models_keywords": {
-    "description": "SoulX-SVCVC 参考音色别名配置",
-    "type": "list",
-    "hint": "每行一个参考音色，格式为 '音色ID|||别名'。把参考音频放入 SVCVC-API/voice_profiles 后，使用 /刷新svcvc音色 自动读取。",
-    "default": []
-  },
-  "svcvc_prompt_vocal_sep": {
-    "description": "SoulX 参考音频人声分离",
-    "type": "bool",
-    "hint": "对应 SoulX UI 的 Prompt 人声分离。参考音色若已经是干净人声应关闭；带伴奏的参考音频才开启。",
-    "default": false
-  },
-  "svcvc_target_separation": {
-    "description": "SVCVC 目标歌曲人声分离方式",
-    "type": "string",
-    "hint": "SoulX 使用其自带分离；MSST 使用隔壁 RVCSVC-API-MSST 的 BS-Roformer 原生 AMD ROCm 分离；纯人声输入可选择不分离。",
-    "default": "soulx",
-    "options": ["soulx", "msst", "none"],
-    "labels": ["SoulX 目标歌曲人声分离", "MSST 人声分离（BS-Roformer）", "不分离（输入已是纯人声）"]
-  },
-  "svcvc_auto_shift": {
-    "description": "SoulX 自动变调",
-    "type": "bool",
-    "hint": "自动匹配目标歌曲与参考音色的音域。手动变调不为 0 时，SoulX 会优先使用手动值。",
-    "default": true
-  },
-  "svcvc_auto_mix_acc": {
-    "description": "SoulX 自动混合伴奏",
-    "type": "bool",
-    "hint": "目标歌曲开启人声分离时，把转换后的人声自动混回伴奏。传入纯人声时建议关闭。",
-    "default": true
-  },
-  "svcvc_pitch_shift": {
-    "description": "SoulX 指定变调（半音）",
-    "type": "int",
-    "hint": "对应 SoulX UI 的指定变调，范围 -36 到 36。命令明确给出升降调时会临时覆盖该值。0 表示交给自动变调。",
-    "default": 0,
-    "minimum": -36,
-    "maximum": 36
-  },
-  "svcvc_n_step": {
-    "description": "SoulX 采样步数",
-    "type": "int",
-    "hint": "对应 SoulX UI 的采样步数，范围 1 到 200。值越高通常细节更多但推理更慢，官方默认 32。",
-    "default": 32,
-    "minimum": 1,
-    "maximum": 200
-  },
-  "svcvc_cfg": {
-    "description": "SoulX CFG 系数",
-    "type": "string",
-    "hint": "对应 SoulX UI 的 cfg 系数，范围 0 到 10，支持小数；官方默认 1.0。",
-    "default": "1.0"
-  },
-  "svcvc_seed": {
-    "description": "SoulX 固定种子",
-    "type": "int",
-    "hint": "范围 0 到 4294967295。关闭随机种子时，相同输入和参数可使用该种子复现结果。",
-    "default": 42,
-    "minimum": 0,
-    "maximum": 4294967295
-  },
-  "svcvc_random_seed": {
-    "description": "SoulX 每次随机种子",
-    "type": "bool",
-    "hint": "开启后每个任务生成一个 0 到 4294967295 的新种子，并在完成消息中显示实际值。随机任务不写入持久缓存，避免缓存目录快速膨胀。",
-    "default": false
-  },
   "llm_force_mode": {
     "description": "LLM强制模式 - 禁用所有手动命令",
     "type": "bool",
-    "hint": "开启后，/rvc、/svc、/svcvc 等手动命令将被禁用，只能通过对话让 LLM 自动调用翻唱工具。",
+    "hint": "开启后，/rvc 等手动命令将被禁用，只能通过对话让 LLM 自动调用翻唱工具。",
     "default": false
   },
   "enable_smart_cover": {
@@ -281,12 +133,6 @@
     "type": "bool",
     "hint": "记录用户常用的模型、音调偏好等，下次翻唱时能推荐最合适配置。数据保存在 data 目录下。",
     "default": true
-  },
-  "default_api_type": {
-    "description": "默认翻唱类型",
-    "type": "string",
-    "hint": "当用户未指定时使用的默认翻唱类型，可选 'rvc'、'svc' 或 'svcvc'",
-    "default": "rvc"
   },
   "default_model_index": {
     "description": "默认模型序号",
@@ -328,12 +174,6 @@
     "hint": "用户偏好数据的存储文件路径（JSON格式）",
     "default": "data/user_preferences.json"
   },
-  "third_party_api_key": {
-    "description": "第三方音乐API密钥 (jkapi.com)",
-    "type": "string",
-    "hint": "QQ 音源已下线，此项保留只为兼容旧配置，不再用于取歌。",
-    "default": ""
-  },
   "enable_progress_bar": {
     "description": "开启渲染和分离进度条输出到QQ聊天窗口",
     "type": "bool",
@@ -370,12 +210,6 @@
     "hint": "可选值：rmvpe（默认，效果最好，适合干净人声）、crepe（效果好但更吃GPU，电音人声推荐）、harvest（ZLUDA/AMD模式下可能报tensor维度错误，不推荐）、pm（速度最快但效果一般）。遇到电音人声跑调时建议切换为crepe。",
     "default": "rmvpe"
   },
-  "svc_f0_method": {
-    "description": "SVC音高提取算法（F0方法）",
-    "type": "string",
-    "hint": "可选值：fcpe（默认，速度快效果好，SVC推荐）、rmvpe（效果稳定）、crepe（效果好但吃GPU）、harvest（对电音人声容忍度更高）、parselmouth（速度快）、dio（速度最快效果一般）。SVC-Fusion默认使用fcpe，一般无需更改。",
-    "default": "fcpe"
-  },
   "index_rate": {
     "description": "RVC特征检索比率（Index Rate）",
     "type": "string",
@@ -389,13 +223,13 @@
     "default": 3
   },
   "reverb_intensity": {
-    "description": "RVC/SVC 混响强度 (Reverb)",
+    "description": "RVC 混响强度 (Reverb)",
     "type": "int",
     "hint": "为生成的音频添加混响效果的强度。范围0~10，0为干声无混响，4为默认值，10为宏大混响（类似演唱会效果）。",
     "default": 4
   },
   "delay_intensity": {
-    "description": "RVC/SVC 回声/延迟强度 (Delay)",
+    "description": "RVC 回声/延迟强度 (Delay)",
     "type": "int",
     "hint": "为生成的音频添加回声效果的强度，自动同步歌曲BPM。范围0~10，0为关闭回声，数值越大回声越明显。建议与混响搭配使用。",
     "default": 0
@@ -403,61 +237,61 @@
   "msst_default_model": {
     "description": "MSST 默认人声分离模型",
     "type": "string",
-    "hint": "【RVCSVC-API-MSST 及 SVCVC-API-SVF 的 MSST 模式有效】默认使用的 MSST 模型 ID。使用 /列出msst模型 或 /列出svcvc分离模型 查看列表，使用对应切换指令修改。RVCSVC-API-amd 后端会自动忽略此项。",
+    "hint": "【只有声明了 MSST 接口的 RVC 中间层会用到】默认使用的分离模型 ID。用 /列出msst模型 查看列表、/切换msst模型 修改；没有该接口的中间层会自动忽略。",
     "default": "bs_roformer_ep_317_sdr_12.9755"
   },
   "msst_batch_size": {
     "description": "MSST 批处理大小 (Batch Size)",
     "type": "int",
-    "hint": "【RVCSVC-API-MSST 及 SVCVC-API-SVF 的 MSST 模式有效】控制MSST分离时的显存占用与吞吐。model_bs_roformer_ep_317_sdr_12.9755 原生推荐 1；增大主要提升速度，不直接提升音质，并会增加显存占用。",
+    "hint": "【只有声明了 MSST 接口的 RVC 中间层会用到】控制分离时的显存占用与吞吐。model_bs_roformer_ep_317_sdr_12.9755 原生推荐 1；调大主要提升速度，不直接提升音质。",
     "default": 1
   },
   "msst_num_overlap": {
     "description": "MSST 重叠次数 (Num Overlap)",
     "type": "int",
-    "hint": "【RVCSVC-API-MSST 及 SVCVC-API-SVF 的 MSST 模式有效】控制MSST分离的平滑度。默认 4。值越大边缘越平滑但速度成倍下降，值越小速度越快但可能产生轻微咔哒声。使用 RVCSVC-API-amd 后端时此参数无效。",
+    "hint": "【只有声明了 MSST 接口的 RVC 中间层会用到】控制分离的平滑度，默认 4。值越大边缘越平滑但速度成倍下降。",
     "default": 4
   },
   "msst_normalize": {
     "description": "MSST 音频归一化 (Normalize)",
     "type": "bool",
-    "hint": "【RVCSVC-API-MSST 及 SVCVC-API-SVF 的 MSST 模式有效】分离前标准化音量。model_bs_roformer_ep_317_sdr_12.9755 原生配置未启用，默认关闭以保持训练时幅度分布；异常小声/大声素材可手动开启。",
+    "hint": "【只有声明了 MSST 接口的 RVC 中间层会用到】分离前标准化音量，默认关闭以保持训练时的幅度分布。",
     "default": false
   },
   "msst_use_tta": {
     "description": "MSST 测试时增强 (TTA)",
     "type": "bool",
-    "hint": "【RVCSVC-API-MSST 及 SVCVC-API-SVF 的 MSST 模式有效】分别对原始、左右声道交换和反相音频推理后取平均，可能进一步减少泄漏，但耗时约为3倍。默认关闭，追求极致分离时再开启。",
+    "hint": "【只有声明了 MSST 接口的 RVC 中间层会用到】对原始/左右声道交换/反相音频分别推理后取平均，可能减少泄漏，但耗时约为 3 倍。",
     "default": false
   },
   "uvr5_agg": {
     "description": "UVR5 人声分离聚合度",
     "type": "int",
-    "hint": "【仅RVCSVC-API-amd后端有效】控制UVR5人声分离的激进程度，范围0~20。值越大分离越激进（提取人声更完整但可能混入伴奏），值越小越保守（人声更干净但可能丢失细节）。默认10。使用MSST后端时此参数无效。",
+    "hint": "【只有部分 RVC 中间层会用到】UVR5 人声分离的激进程度，范围 0~20。值越大提取越完整但可能混入伴奏，默认 10；其它中间层会忽略此项。",
     "default": 10
   },
   "uvr5_tta": {
     "description": "UVR5 测试时增强 (TTA)",
     "type": "bool",
-    "hint": "【仅RVCSVC-API-amd后端有效】开启后对音频做多次翻转推理再取平均，提升人声分离质量但速度慢约一倍。默认关闭。使用MSST后端时此参数无效。",
+    "hint": "【只有部分 RVC 中间层会用到】开启后对音频做多次翻转推理再取平均，提升分离质量但速度慢约一倍，默认关闭；其它中间层会忽略此项。",
     "default": false
   },
   "uvr5_postprocess": {
     "description": "UVR5 后处理",
     "type": "bool",
-    "hint": "【仅RVCSVC-API-amd后端有效】开启后会检测并去除人声频谱中的静音区域，进一步减少伴奏泄漏。默认关闭。使用MSST后端时此参数无效。",
+    "hint": "【只有部分 RVC 中间层会用到】开启后检测并去除人声频谱中的静音区域，减少伴奏泄漏，默认关闭；其它中间层会忽略此项。",
     "default": false
   },
   "uvr5_window_size": {
     "description": "UVR5 窗口大小",
     "type": "int",
-    "hint": "【仅RVCSVC-API-amd后端有效】STFT窗口大小，影响频谱分辨率。可选值：256、512、1024。默认512。值越大频谱分辨率越高但速度越慢。使用MSST后端时此参数无效。",
+    "hint": "【只有部分 RVC 中间层会用到】STFT 窗口大小，可选 256/512/1024，默认 512；其它中间层会忽略此项。",
     "default": 512
   },
   "uvr5_high_end_process": {
     "description": "UVR5 高频处理方式",
     "type": "string",
-    "hint": "【仅RVCSVC-API-amd后端有效】处理UVR5模型对高频段覆盖不足的问题。mirroring：将中高频镜像填充到高频区域（推荐）；none：不处理高频。默认mirroring。使用MSST后端时此参数无效。",
+    "hint": "【只有部分 RVC 中间层会用到】处理高频段覆盖不足的方式：mirroring（推荐）或 none，默认 mirroring；其它中间层会忽略此项。",
     "default": "mirroring"
   },
   "enable_send_file": {
@@ -525,7 +359,7 @@
   "model_gender_map": {
     "description": "模型性别映射表",
     "type": "list",
-    "hint": "手动指定模型的性别，每行一个，格式为 '模型别名:male' 或 '模型别名:female'。例如：塔菲:female、派蒙:female、某男声模型:male。模型别名需与 rvc_models_keywords/svc_models_keywords 中的别名一致。未在此表中的模型无法自动升降调。",
+    "hint": "手动指定模型的性别，每行一个，格式为 '模型别名:male' 或 '模型别名:female'。例如：塔菲:female、派蒙:female、某男声模型:male。模型别名需与 rvc_models_keywords 中的别名一致。未在此表中的模型无法自动升降调。",
     "default": []
   },
   "shift_accompaniment": {
@@ -537,15 +371,23 @@
   "vocal_postprocess": {
     "description": "启用旧版人声后处理（EQ/压缩/混响）",
     "type": "bool",
-    "hint": "默认关闭以保留 RVC/SVC 原始音质。开启后才应用 80Hz 高通、16kHz 低通、EQ、压缩、延迟和混响；混响与延迟强度仍由原配置控制。仅对更新后的 RVCSVC-API-amd/MSST 生效。",
+    "hint": "默认关闭以保留 RVC 原始音质。开启后才应用 80Hz 高通、16kHz 低通、EQ、压缩、延迟和混响；混响与延迟强度仍由原配置控制。只有支持该参数的 RVC 中间层才会生效。",
     "default": false
   },
   "render_mode": {
     "description": "翻唱时长模式（唱多长）",
     "type": "string",
     "hint": "chorus＝只翻唱副歌片段（默认，45 秒，最快）；custom＝自定义时长，用下面的 chorus_seconds（20~180 秒），同样是先切出来再分离；full＝整首翻唱（分离整首、变声整首）。注意：完整翻唱耗时明显更长，可能是副歌模式的 5~10 倍，显存占用也更高，长歌容易超出 inference_timeout。需要后端 chorus-mw 0.7.0 及以上支持；老后端会忽略此项、仍按副歌模式处理。",
-    "options": ["chorus", "full", "custom"],
-    "labels": ["副歌片段（默认，最快）", "整首翻唱（很慢，显存占用高）", "自定义时长"],
+    "options": [
+      "chorus",
+      "full",
+      "custom"
+    ],
+    "labels": [
+      "副歌片段（默认，最快）",
+      "整首翻唱（很慢，显存占用高）",
+      "自定义时长"
+    ],
     "default": "chorus"
   },
   "chorus_seconds": {
@@ -571,7 +413,7 @@
   "task_timeout_seconds": {
     "description": "翻唱任务超时时间（秒）",
     "type": "int",
-    "hint": "任务超过这个时间未完成会自动释放状态。SoulX 在 AMD 上处理长歌曲可能耗时较久，建议与 inference_timeout 保持一致。",
+    "hint": "任务超过这个时间未完成会自动释放状态。整首（full）模式处理长歌曲可能耗时较久，建议与 inference_timeout 保持一致。",
     "default": 9000,
     "minimum": 60,
     "maximum": 14400
@@ -590,11 +432,22 @@
     "minimum": 1,
     "maximum": 100
   },
+  "local_audio_cache_ttl": {
+    "description": "本地音频缓存有效期（秒）",
+    "type": "int",
+    "hint": "用户发过的语音/音频在这个时间内可以直接用 /本地翻唱 复用，超时后要求重新发送。默认 300 秒。",
+    "default": 300,
+    "minimum": 10,
+    "maximum": 3600
+  },
   "local_audio_trigger_keywords": {
     "description": "本地音频自动触发关键词",
     "type": "list",
     "hint": "当群友发送语音/音频文件且文字中包含这些关键词时，自动触发本地翻唱。每行一个关键词。默认只留「翻唱」「变声」这类明确想唱的词；「转换」「处理」「修音」这种泛词会把只想聊天或点歌的消息也吞进来，不建议再加。",
-    "default": ["翻唱", "变声"]
+    "default": [
+      "翻唱",
+      "变声"
+    ]
   },
   "local_audio_auto_trigger": {
     "description": "开启本地音频自动触发",
