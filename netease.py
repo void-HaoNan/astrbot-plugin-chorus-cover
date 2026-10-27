@@ -581,9 +581,11 @@ def download_by_api_service(
     status, payload, error = _fetch_json(api_url, _api_headers(cookie), timeout)
     if error:
         logger.warning(
-            "本地网易云服务请求失败: id=%s base=%s (%s)", song_id, base, error
+            "本地网易云服务请求失败: id=%s base=%s (%s)。"
+            "如果服务没启动，先跑 D:\\PYMSS-RVC\\netease-api\\start.ps1（或直接用一键启动脚本）",
+            song_id, base, error,
         )
-        return None, REASON_API_UNREACHABLE, False
+        return None, f"{REASON_API_UNREACHABLE}（{base}）", False
 
     link, reason, is_trial = judge_result(payload, status)
     if reason:

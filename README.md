@@ -1,5 +1,13 @@
 # astrbot_plugin_chorus_cover（副歌翻唱 · 自维护分支）
 
+## 前置服务（v0.4.1 起）
+
+取歌依赖本地 NeteaseCloudMusicApi 服务（默认 http://127.0.0.1:3003）：
+
+- 启动：powershell -ExecutionPolicy Bypass -File D:\PYMSS-RVC\netease-api\start.ps1
+- 已接进一键启动脚本（D:\QQBOT\启动\start.ps1），开机跟着一起起
+- 服务没起时翻唱会失败，日志里会写明是哪个地址连不上；回落外链只对免费歌有效
+
 ## 这是自维护分支
 
 - **来源**：本仓库是 [sdfsfsk/matsuko_cover](https://github.com/sdfsfsk/matsuko_cover)（`astrbot_plugin_matsuko_cover`）**v2.13.0** 的自维护分支，维护者 void-HaoNan，仓库地址 <https://github.com/void-HaoNan/astrbot-plugin-chorus-cover>。
