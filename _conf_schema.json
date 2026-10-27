@@ -101,7 +101,7 @@
   "rvc_models_dir": {
     "description": "RVC 音色模型文件夹",
     "type": "string",
-    "hint": "音色模型（.pth）放在哪个文件夹。留空 = 自动读取中间层（chorus-mw）实际使用的目录，默认是 RVC 整合包里的 assets\\weights，例如 D:\\RVC\\assets\\weights。\n\n想换目录：先把 .pth 放过去，再把中间层的环境变量 CHORUS_WEIGHTS_DIR 设成这个路径并重启中间层（中间层启动时会把它作为 RVC 的 weight_root 传下去），最后在这里填同一个路径。\n\n这里填的路径会拿去和中间层核对：不一致时插件会在 /刷新rvc模型 的结果里直接告诉你不一致，RVC 不会从这个目录加载。\n\n填好或留空都点一下 /刷新rvc模型，命令会回显真实目录和 .pth 数量。",
+    "hint": "留空 = 用中间层当前的目录（默认是 RVC 整合包的 assets\\weights）。\n\n想直接看真实路径并打开这个文件夹：发 /rvc模型文件夹。索引 .index 放 RVC 的 assets\\indices，这个不用填。\n\n想换目录：.pth 放过去 → 给中间层设环境变量 CHORUS_WEIGHTS_DIR 并重启 → 回来填同一个路径（不填也行，填了会拿来做一致性核对）。",
     "default": ""
   },
   "llm_force_mode": {

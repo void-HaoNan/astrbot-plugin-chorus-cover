@@ -117,18 +117,21 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 
 > 注意：哪些参数真正生效由后端决定。`chorus-mw` **0.8.0 起**会真的使用 `f0_method`、`index_rate`、`rms_mix_rate`、`protect`、`inst_volume_db`、`vocal_volume_db`（传进 RVC 推理和混音），日志里每次请求打一行 `params ...` 可核对；`filter_radius`、混响/延迟、UVR5、MSST 那几组虽然还在 `/convert` 形参里，但中间层不消费，0.10.1 已从设置页删除。
 
-## 音色模型放哪（0.11.0）
+## 音色模型放哪（0.12.0 起有一键打开）
 
-音色模型就是 `.pth` 文件。默认位置：
+两个目录，别搞混：
 
-```
-<RVC 整合包>\assets\weights\*.pth
-```
+| 放什么 | 默认目录 | 说明 |
+| --- | --- | --- |
+| 音色模型 `.pth` | `<RVC 整合包>\assets\weights\` | 每个音色一个文件，放进去就能在列表里看到 |
+| 特征索引 `.index` | `<RVC 整合包>\assets\indices\` | 可选；按模型名模糊匹配，找不到也能唱，只是音色贴合度差一点 |
 
-例如 `D:\PYMSS-RVC\RVC20260723Nvidia50x0\RVC20260718Nvidia50x0\assets\weights\`。
+本机实例：`D:\PYMSS-RVC\RVC20260723Nvidia50x0\RVC20260718Nvidia50x0\assets\weights\` 和
+同级的 `...\assets\indices\`。
 
-**怎么确认现在用的是哪个目录**：发一次 `/刷新rvc模型`，结果最后会带上
-`📁 模型文件夹：<绝对路径>（N 个 .pth，来源：…）`。这行是中间层 `/model_info` 现查的，不是猜的。
+**别去设置里找路径，直接发命令**：`/rvc模型文件夹`（管理员）会把两个真实目录回显出来，
+并在跑机器人的这台机器上**直接把模型文件夹打开**，丢文件进去、再发一次 `/刷新rvc模型` 就行。
+这条命令的目录是中间层 `/model_info` 现查的，不是插件瞎猜。
 
 **想换成别的目录**，三步，缺一不可：
 
@@ -136,13 +139,14 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 2. 给中间层设环境变量 `CHORUS_WEIGHTS_DIR=D:\models\rvc`，重启中间层（启动日志会打
    `音色模型目录=...`；中间层会把这个路径作为 RVC 的 `weight_root` 传给 RVC 进程，
    RVC 才真的去那儿加载）；
-3. 在插件设置里把 `rvc_models_dir` 填成同一个路径，再发一次 `/刷新rvc模型` 核对。
+3. 在插件设置里把 `rvc_models_dir` 填成同一个路径（不填也能跑，填了会拿来做一致性核对），
+   再发一次 `/刷新rvc模型`。
 
 只改插件设置里的 `rvc_models_dir` **不会**让 RVC 换目录——RVC 只认它自己进程里的
 `weight_root`。填了但和中间层不一致时，插件会在结果里明确告警，不会静默用错模型。
 
-索引文件（`.index`）仍然从 RVC 的 `assets\indices` 找，跟着模型名模糊匹配，不随
-`rvc_models_dir` 变。
+索引目录不跟 `CHORUS_WEIGHTS_DIR` 走，始终是 RVC 的 `assets\indices`（中间层 `/model_info`
+的 `index_dirs` 会把实际搜索路径列出来）。
 
 ## 命令表
 
@@ -151,7 +155,8 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 | `/rvc <歌名> [升降调]` | 所有人 | 主入口：搜歌 → 选歌 → 选音色 → 翻唱。升降调 -12~12 |
 | `/本地翻唱 [模型名/序号] [升降调]` | 所有人 | 翻唱刚发的语音/音频；同一条消息里带音频也可以 |
 | `/翻唱帮助` | 所有人 | 用法卡片 + 常用入口按钮 |
-| `/刷新rvc模型` | 所有人 | 从后端拉模型列表，写回配置（保留已配的别名） |
+| `/刷新rvc模型` | 所有人 | 从后端拉模型列表，写回配置（保留已配的别名），并回显模型 / 索引目录 |
+| `/rvc模型文件夹` | 管理员 | 回显音色模型与索引的真实目录，并直接打开模型文件夹（0.12.0） |
 | `/查看翻唱任务` | 所有人 | 当前会话有没有在跑的任务 |
 | `/取消翻唱任务` | 所有人 | 取消当前任务（同时通知后端停） |
 | `/我的翻唱统计` | 所有人 | 个人使用统计与偏好 |
