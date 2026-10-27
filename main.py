@@ -66,7 +66,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱（自维护分支，基于 matsuko_cover 2.13.0，AGPL-3.0）：对话出口统一走模型、失败结果结构化",
-    "0.7.0",
+    "0.8.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -1072,10 +1072,9 @@ class MusicPlugin(Star):
     def _pick_best_song(songs: list, query: str, artist: str = "") -> dict:
         """在搜索结果里挑**最确定**的一首；一个都不像就返回空 dict。
 
-        0.7.0 起匹配统一走 ``source_router.pick_best_song``：候选的匹配文本从
-        「歌名 + 歌手」扩成「歌名 + 别名 + 歌手」，并先淘汰伴奏类版本；
-        同分时的取舍（片段剔除、搜索排序）也由路由模块统一处理。
-        这里保留这个入口，只是把 dict 列表转成候选再转回来。
+        0.8.0 起匹配统一走 ``source_router.pick_best_song``：歌名整串原样搜、
+        别名只按「标题+别名」拼接比较、伴奏类先淘汰、歌手只在明确给出时当过滤条件；
+        没有任何打分或模糊规则。这里保留这个入口，只是把 dict 列表转成候选再转回来。
         """
         return source_router.pick_best_song_dict(songs, query, artist)
 
@@ -1105,7 +1104,8 @@ class MusicPlugin(Star):
 
         1. 已经是存在的本地文件 → 直接返回，不联网；
         2. 其它情况交给路由器按 ``source_order`` 依次尝试各平台：
-           搜歌（带别名）→ 严格匹配 → 排除伴奏类 → 取播放链接 → 下载 → 80 秒闸门；
+           搜歌（song_name 整串）→ 标题/标题+别名拼接匹配 → 排除伴奏类
+           → 取播放链接 → 下载 → 80 秒闸门；
         3. 前一个平台搜不到 / 选不出 / 下不下来就自动换下一个，日志里每个平台一行；
         4. 全部失败时把每个平台的原因串起来返回；如果所有候选都只是伴奏版，
            原因就是「只有伴奏版」。
@@ -3305,8 +3305,13 @@ class MusicPlugin(Star):
         不要用本工具。**
 
         Args:
-            song_name(string): 要翻唱的歌曲名称
-            artist_name(string, optional): 歌手名称（如果有指定版本/歌手，请务必填入此参数，如'雨宫天'）
+            song_name(string): 用户说的歌名，**原样整串**填进来。版本名/别名（司凤版、
+                伴奏版、纯享版、DJ版…）属于歌名的一部分，留在 song_name 里。
+                例：「唱雨爱司凤版」→ song_name='雨爱司凤版'，artist_name 不填；
+                「唱周杰伦的晴天」→ song_name='晴天'，artist_name='周杰伦'。
+            artist_name(string, optional): 只有用户**明确说出歌手**时才填
+                （「周杰伦的晴天」「晴天 周杰伦 唱的」「歌手是周杰伦」）。
+                没说歌手就不要填，不许凭印象或搜索结果猜，也不要把版本名塞进来。
             model_index(number): 使用的模型序号（从可用模型列表中选择），默认为1表示第一个模型
             model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
                 例如：'塔菲'会自动匹配到tafeim.pth
@@ -3341,16 +3346,15 @@ class MusicPlugin(Star):
         actual_music_source = self._resolve_music_source(music_source)
         source_display = "网易云"
         
-        search_query = f"{song_name} {artist_name}" if artist_name else song_name
-
         if not self._register_active_task(event, song_name, "rvc", model_display):
             return "⏳ 当前已有翻唱任务，请等待完成或先调用 cancel_cover_task。"
         logger.info(
             f"[MatsukoCover任务Debug] 接受 rvc_cover 请求 | song={song_name} | "
-            f"model={model_display} | source={actual_music_source}"
+            f"artist={artist_name or '-'} | model={model_display} | source={actual_music_source}"
         )
         task = self._create_tracked_task(self._smart_cover_async(
-            event, search_query, "rvc", model_index, key_shift, model_display, actual_music_source
+            event, song_name, "rvc", model_index, key_shift, model_display,
+            actual_music_source, artist_name=artist_name,
         ))
         self._bind_active_asyncio_task(event, task)
         # 只回一句中性短句给 LLM，具体怎么说由人格模型组织；不再拼符号和参数
@@ -3361,8 +3365,13 @@ class MusicPlugin(Star):
         '''使用SVC模型翻唱歌曲。
 
         Args:
-            song_name(string): 要翻唱的歌曲名称
-            artist_name(string, optional): 歌手名称（如果有指定版本/歌手，请务必填入此参数，如'雨宫天'）
+            song_name(string): 用户说的歌名，**原样整串**填进来。版本名/别名（司凤版、
+                伴奏版、纯享版、DJ版…）属于歌名的一部分，留在 song_name 里。
+                例：「唱雨爱司凤版」→ song_name='雨爱司凤版'，artist_name 不填；
+                「唱周杰伦的晴天」→ song_name='晴天'，artist_name='周杰伦'。
+            artist_name(string, optional): 只有用户**明确说出歌手**时才填
+                （「周杰伦的晴天」「晴天 周杰伦 唱的」「歌手是周杰伦」）。
+                没说歌手就不要填，不许凭印象或搜索结果猜，也不要把版本名塞进来。
             model_index(number): 使用的模型序号（从可用模型列表中选择），默认为1表示第一个模型
             model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
                 例如：'塔菲'会自动匹配到tafeim.pth
@@ -3397,16 +3406,15 @@ class MusicPlugin(Star):
         actual_music_source = self._resolve_music_source(music_source)
         source_display = "网易云"
         
-        search_query = f"{song_name} {artist_name}" if artist_name else song_name
-
         if not self._register_active_task(event, song_name, "svc", model_display):
             return "⏳ 当前已有翻唱任务，请等待完成或先调用 cancel_cover_task。"
         logger.info(
             f"[MatsukoCover任务Debug] 接受 svc_cover 请求 | song={song_name} | "
-            f"model={model_display} | source={actual_music_source}"
+            f"artist={artist_name or '-'} | model={model_display} | source={actual_music_source}"
         )
         task = self._create_tracked_task(self._smart_cover_async(
-            event, search_query, "svc", model_index, key_shift, model_display, actual_music_source
+            event, song_name, "svc", model_index, key_shift, model_display,
+            actual_music_source, artist_name=artist_name,
         ))
         self._bind_active_asyncio_task(event, task)
         # 只回一句中性短句给 LLM，具体怎么说由人格模型组织；不再拼符号和参数
@@ -3426,8 +3434,10 @@ class MusicPlugin(Star):
         '''使用 SoulX-Singer SVC Voice Conversion 参考音色翻唱歌曲。
 
         Args:
-            song_name(string): 要翻唱的歌曲名称
-            artist_name(string, optional): 指定歌手或版本
+            song_name(string): 用户说的歌名，**原样整串**填进来。版本名/别名（司凤版、
+                伴奏版等）属于歌名的一部分，留在 song_name 里。
+            artist_name(string, optional): 只有用户**明确说出歌手**时才填；
+                没说歌手就不要填，也不要把版本名塞进来。
             model_index(number): 参考音色序号，从1开始
             model_name(string, optional): 参考音色名称或别名，优先于序号
             key_shift(number, optional): 手动变调，范围-36到36；不传时使用插件配置，显式传0会覆盖配置并交给SoulX自动匹配音域
@@ -3461,22 +3471,22 @@ class MusicPlugin(Star):
 
         actual_music_source = self._resolve_music_source(music_source)
         source_display = "网易云"
-        search_query = f"{song_name} {artist_name}" if artist_name else song_name
 
         if not self._register_active_task(event, song_name, "svcvc", model_display):
             return "⏳ 当前已有翻唱任务，请等待完成或先调用 cancel_cover_task。"
         logger.info(
             f"[MatsukoCover任务Debug] 接受 svcvc_cover 请求 | song={song_name} | "
-            f"profile={model_display} | source={actual_music_source}"
+            f"artist={artist_name or '-'} | profile={model_display} | source={actual_music_source}"
         )
         task = self._create_tracked_task(self._smart_cover_async(
             event,
-            search_query,
+            song_name,
             "svcvc",
             model_index,
             key_shift,
             model_display,
             actual_music_source,
+            artist_name=artist_name,
         ))
         self._bind_active_asyncio_task(event, task)
         seed_mode = "随机种子" if self.svcvc_random_seed else f"固定种子 {self.svcvc_seed}"
@@ -3484,8 +3494,12 @@ class MusicPlugin(Star):
         # 只回一句中性短句给 LLM，具体怎么说由人格模型组织；不再拼符号和参数
         return f"好，我去弄这首《{song_name}》，好了直接发你。"
 
-    async def _do_cover(self, event: AstrMessageEvent, song_name: str, api_type: str, model_index: int, key_shift: Optional[int], music_source: str = None) -> str:
-        """统一的翻唱执行逻辑"""
+    async def _do_cover(self, event: AstrMessageEvent, song_name: str, api_type: str, model_index: int, key_shift: Optional[int], music_source: str = None, artist_name: str = "") -> str:
+        """统一的翻唱执行逻辑。
+
+        ``song_name`` 原样整串交给搜歌入口；``artist_name`` 非空才当过滤条件，
+        由 :func:`source_router.pick_best_song` 统一处理（不再拼搜索串）。
+        """
         flow_id = uuid.uuid4().hex[:8]
         result_path = None
         temp_audio_file = None
@@ -3519,15 +3533,15 @@ class MusicPlugin(Star):
             if key_shift is not None and not (min_shift <= key_shift <= max_shift):
                 return f"❌ 音调调整值无效，请在 {min_shift} 到 {max_shift} 之间选择。"
             
-            # === 搜歌：0.7.0 起按 source_order 多音源依次尝试，别名也参与匹配 ===
+            # === 搜歌：0.8.0 起 song_name 整串原样搜，artist 只在明确给出时当过滤条件 ===
             actual_music_source = self._resolve_music_source(music_source)
             logger.info(
                 f"[CoverFlow:{flow_id}] stage=music_search | "
                 f"order={source_router.describe_order(self.source_order)} | "
-                f"timeout={self.music_api_timeout}s"
+                f"timeout={self.music_api_timeout}s | artist={artist_name or '-'}"
             )
             selected_song, search_reason, _search_attempts = (
-                await self.song_router.find_song(song_name)
+                await self.song_router.find_song(song_name, artist_name or "")
             )
 
             logger.info(
@@ -3810,8 +3824,14 @@ class MusicPlugin(Star):
             - 拿不准是「听原曲」还是「翻唱」时，先问一句「你要原曲还是唱一遍？」再决定。
         
         Args:
-            song_name(string): 要翻唱的歌曲名称（必填）
-            artist_name(string, optional): 歌手名称（如果有指定版本/歌手，请务必填入此参数，如'雨宫天'）
+            song_name(string): 用户说的歌名，**原样整串**填进来，不要拆分。
+                - 「唱雨爱司凤版」→ song_name='雨爱司凤版'，artist_name 不填
+                - 「唱周杰伦的晴天」→ song_name='晴天'，artist_name='周杰伦'
+                版本名/别名（司凤版、伴奏版、纯享版、DJ版…）属于歌名的一部分，
+                必须留在 song_name 里，**不要**塞进 artist_name。
+            artist_name(string, optional): 只有用户**明确说出歌手**时才填
+                （如「周杰伦的晴天」「晴天 周杰伦 唱的」「歌手是周杰伦」）。
+                用户没说歌手就**绝对不要填**，不许凭印象或搜索结果猜。
             api_type(string, optional): 翻唱类型，'rvc'、'svc' 或 'svcvc'。不指定则使用默认值或用户偏好
                 当前可用引擎: {available_engines}
             model_index(number, optional): 模型序号（从1开始）。不指定则使用默认值或用户偏好
@@ -3940,15 +3960,14 @@ class MusicPlugin(Star):
             
             source_display = "网易云"
             
-            search_query = f"{song_name} {artist_name}" if artist_name else song_name
-            
             # 注册活跃任务
             if not self._register_active_task(event, song_name, actual_api_type, actual_model_display):
                 return "⏳ 当前已有翻唱任务，请等待完成或先调用 cancel_cover_task。"
             
             task = self._create_tracked_task(self._smart_cover_async(
-                event, search_query, actual_api_type, actual_model_index, 
-                actual_key_shift, actual_model_display, actual_music_source
+                event, song_name, actual_api_type, actual_model_index, 
+                actual_key_shift, actual_model_display, actual_music_source,
+                artist_name=artist_name,
             ))
             self._bind_active_asyncio_task(event, task)
             
@@ -3961,14 +3980,23 @@ class MusicPlugin(Star):
 
     async def _smart_cover_async(self, event: AstrMessageEvent, song_name: str,
                                  api_type: str, model_index: int, key_shift: Optional[int],
-                                 model_display: str, music_source: str = None):
-        """smart_cover 异步执行函数"""
+                                 model_display: str, music_source: str = None,
+                                 artist_name: str = ""):
+        """smart_cover 异步执行函数。
+
+        ``song_name`` 是用户说的歌名整串（版本名留在里面），``artist_name`` 只在
+        用户明确说出歌手时才有值，两者分开传给取歌入口，不再拼成一个搜索串。
+        """
         try:
             logger.info(
                 f"[MatsukoCover任务Debug] 后台翻唱流程已进入 | song={song_name} | "
+                f"artist={artist_name or '-'} | "
                 f"api={api_type} | model={model_display} | source={music_source}"
             )
-            result = await self._do_cover(event, song_name, api_type, model_index, key_shift, music_source) or ""
+            result = await self._do_cover(
+                event, song_name, api_type, model_index, key_shift, music_source,
+                artist_name=artist_name,
+            ) or ""
 
             # 失败判断只认明确标记：❌ 开头，或 FAIL: 开头（保留 ❌ 兼容 _do_cover 现有返回点）。
             # 不用关键词猜（"失败"/"错误"/"超时"…）：正常文案里带"失败"两个字就会被误判成任务失败。

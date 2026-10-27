@@ -405,7 +405,7 @@ class NeteaseFetcher:
 
         和点歌插件 ``NetEaseMusic.fetch_songs`` 完全同一个接口和参数；多带一个
         ``alias``（搜索结果里的别名字段，例如「雨爱」的「司凤版」），
-        0.7.0 起选歌会把「标题 + 别名 + 歌手」拼起来一起比。
+        0.8.0 起选歌把「标题 + 别名」拼成一段和歌名整串比较。
         """
         keyword = str(keyword or "").strip()
         if not keyword:

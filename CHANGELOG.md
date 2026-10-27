@@ -3,6 +3,58 @@
 本文件记录 **astrbot_plugin_chorus_cover**（副歌翻唱 · 自维护分支）的变更。
 上游 `sdfsfsk/matsuko_cover` 的历史日志请见上游仓库，此处只记本分支的差异。
 
+## v0.8.0（2026-10-27）
+
+选歌判定按用户定的规则重做：**整串当歌名、歌手只在明确指定时生效、别名按拼接匹配、
+伴奏排除**；旧的「标题互相包含 + 长度打分」整套模糊规则删除，只留一套确定规则。
+起因是「雨爱 司凤版」被模型拆成 `song_name='雨爱'` + `artist_name='司凤'`（把版本名当歌手），
+结果选中了素人翻唱《雨爱·司凤》（180 秒），正确目标是
+id `3445953575`《雨爱》/ Settle一虾子 / 别名「司凤版」/ 138 秒。
+
+### 变更
+
+- **`source_router.pick_best_song` 重写**：
+  - 候选先排除伴奏类（伴奏/纯享/纯音乐/消音/无人声/off vocal/instrumental/inst/karaoke/dj版）；
+  - 匹配文本为「标题 + 别名(alias/alia/tns)」，只有两档：完全相等（`标题 == 歌名` 或
+    `标题+别名 == 歌名`）、包含（扣掉歌名后的剩余字符必须全部来自别名，解释不了就不匹配）；
+  - 歌手只在明确给出时过滤；没有任何候选的歌手包含它时，日志写一行 `artist_filter_ignored`，
+    改把它当版本别名（只留别名里含这个词的候选），不因歌手条件判失败；
+  - 同档取舍只保留「剔除时长不到同档最长 90% 的片段/剪辑，再按搜索顺序」这一条，不参与相似度判定；
+  - 删除标题长度×2、标题完全相等 +100、歌手命中 +100、标题+别名覆盖 +30 的打分，以及
+    「标题互为子串」的模糊匹配。
+- **搜索词**：`_search_keywords` 只返回 `song_name` 原文整串，不再补「歌名 + 第一位歌手」，
+  不拆版本名；`artist` 只当过滤条件。
+- **入口拆参**：`_do_cover`、`_smart_cover_async` 增加 `artist_name` 参数；
+  `smart_cover` / `rvc_cover` / `svc_cover` / `svcvc_cover` 不再把歌手拼进 `search_query`，
+  歌名和歌手分开交给 `find_song`。
+- **工具 docstring 改写**：明确「唱雨爱司凤版 → song_name='雨爱司凤版'，artist 不填」
+  「唱周杰伦的晴天 → song_name='晴天'，artist='周杰伦'」「版本名/别名属于歌名的一部分，
+  不要塞进 artist_name」「用户没明确说歌手时禁止凭印象填 artist_name」。
+
+### 验证
+
+用 AstrBot 自带 venv（`C:\Users\21903\AppData\Roaming\uv\tools\astrbot\Scripts\python.exe`）
+跑真实网络 + 真实下载（不经过 AstrBot，不重启机器人）：
+
+- 「雨爱司凤版」（song_name 整串、无 artist）→ **id 3445953575**《雨爱》- Settle一虾子
+  （别名 司凤版），ffprobe **138.4 秒**，不是素人翻唱、不是伴奏。
+- 「雨爱」+ artist「司凤」→ 日志出现 `artist_filter_ignored | song=雨爱 | artist=司凤`，
+  仍然命中 **id 3445953575**（138.4 秒）。
+- 「失眠飞行」→ 仍命中 **id 1365898499**《失眠飞行》- 接个吻，开一枪、沈以诚、薛明媛，**207.2 秒**。
+- 「晴天」+ artist「周杰伦」→ 网易云 10 条候选里没有能确认的版本（同名翻唱/原唱标注全部不匹配），
+  自动换源，酷狗命中周杰伦但直链要验证，酷我取到 **id 228908**《晴天》- 周杰伦，**269.7 秒**；
+  没有乱选任何翻唱。
+- 离线单测：完全相等 > 包含、包含的剩余字符必须来自别名、伴奏先淘汰、歌手命中时按歌手过滤，
+  全部通过。
+- `py_compile` 通过：`main.py` / `source_router.py` / `netease_fetch.py` / `api.py` /
+  `selection.py` / `outbound.py` / `intent_gate.py` / `qq_callbacks.py`。
+- 未重启 AstrBot（由用户重启）。
+
+### 文件
+
+- 修改：`source_router.py`、`main.py`、`netease_fetch.py`（注释）、`README.md`、
+  `CHANGELOG.md`、`metadata.yaml`
+
 ## v0.7.0（2026-10-27）
 
 多音源自动切换 + 别名匹配 + 伴奏排除。起因是一个真实案例：用户说「雨爱司凤版」，

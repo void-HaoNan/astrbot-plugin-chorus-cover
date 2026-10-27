@@ -1,10 +1,27 @@
-"""多音源取歌路由（0.7.0）。
+"""多音源取歌路由（0.8.0：按用户定的确定规则选歌）。
 
 按配置顺序逐个平台执行同一套流程：
 
-    搜歌 → 严格匹配（标题 + 别名 + 歌手）→ 排除伴奏类 → 取播放链接 → 下载 → 80 秒闸门
+    搜歌（song_name 原文整串）→ 确定规则匹配（标题 / 标题+别名）→ 排除伴奏类
+    → 取播放链接 → 下载 → 80 秒闸门
 
 前一个平台任何一步没成就自动换下一个，每个平台在日志里留一行结果。
+
+选歌规则（0.8.0，不再打分、不再猜版本）
+======================================
+
+1. **整串当歌名**：``song_name`` 原样去搜、原样比，不做任何拆分或改写。
+2. **歌手只在明确给出时生效**：``artist`` 非空才按歌手过滤。若没有任何候选的歌手包含它，
+   写一行 ``artist_filter_ignored``，改把该词当版本别名用（只留别名里含这个词的候选）；
+   一个都没有就返回「没有能确认的版本」，绝不拿同名翻唱顶替。
+3. **别名只在明确出现时参与**：用户说的版本词（司凤版等）会体现在 ``song_name`` 整串里，
+   因此「标题 + 别名(alias/alia/tns)」拼起来正好等于歌名的那一版才算命中。
+4. **匹配只有两档**：
+   - 完全相等：``标题 == song_name``，或 ``标题+别名 == song_name``；
+   - 包含：``标题+别名`` 包含 ``song_name``，且扣掉歌名后的剩余字符必须全部来自别名
+     （任何解释不了的剩余字符都当不匹配，例如「晴天 (原唱 周杰伦)」「【ROZA】失眠飞行」）。
+5. **同档取舍**：先剔除时长不到同档最长候选 90% 的（视为片段/剪辑），再按搜索顺序取第一条。
+   这是唯一的同档取舍，不参与匹配判定。
 
 音源实现
 ========
@@ -24,10 +41,13 @@
 别名匹配
 ========
 
-候选的匹配文本是「标题 + 别名 + 歌手」：
+候选的匹配文本是「标题 + 别名」：
 
 - 网易云搜索结果自带 ``alias``；没有时再用 ``/api/song/detail`` 的 ``alia`` / ``tns`` 补；
-- 酷狗 / 酷我 / QQ 音乐的搜索结果没有别名字段，别名部分为空（靠标题和歌手匹配）。
+- 酷狗 / 酷我 / QQ 音乐的搜索结果没有别名字段，别名部分为空（靠标题匹配）。
+
+别名**不单独当候选**：0.8.0 起只有「标题+别名整段等于歌名」或「剩余字符全部来自别名」
+才算命中；用户没说版本，就不会因为别名里有版本词而乱挑版本。
 
 伴奏排除
 ========
@@ -240,21 +260,40 @@ def _candidate_from_song(song: Any, source: str) -> Optional[SongCandidate]:
     )
 
 
+def _match_tier(candidate: SongCandidate, normalized_query: str) -> int:
+    """候选与歌名的匹配档位：2=完全相等，1=可解释的包含，0=不匹配。
+
+    「完全相等」指归一化后 ``标题 == 歌名``，或 ``标题+别名 == 歌名``；
+    「包含」只接受 ``标题+别名`` 里的歌名以外的剩余字符全部来自别名，
+    任何解释不了的剩余字符都算不匹配（例如标题里的 (Live)、【ROZA】、原唱 xxx）。
+    """
+    title = normalize_text(candidate.name)
+    alias = normalize_text(candidate.alias)
+    combined = title + alias
+    if title == normalized_query or combined == normalized_query:
+        return 2
+    if normalized_query and normalized_query in combined:
+        leftover = combined.replace(normalized_query, "", 1)
+        if not leftover or leftover in alias:
+            return 1
+    return 0
+
+
 def pick_best_song(
     candidates: list[SongCandidate], query: str, artist: str = ""
 ) -> tuple[Optional[SongCandidate], str, MatchStats]:
-    """在候选里挑**最确定**的一首；一个都不像就返回空。
+    """按用户定的确定规则挑歌；一个都不像就返回空。
 
     规则（宁可不选，也不选错）：
 
     1. 标题或别名里带伴奏类标记的，直接淘汰（翻唱会出静音）；
-    2. 归一化后候选标题必须与查询互为子串；
-    3. 查询里多出来的词（「司凤版」「0.9」这类版本说明）必须能在**别名或歌手**里找到；
-    4. 指定了歌手时，歌手必须包含在候选歌手串里；
-    5. 打分：歌名长度×2，标题完全相等 +100，歌手命中 +100，标题+别名正好覆盖查询 +30；
-    6. 同分时的取舍：先去掉时长不到最长候选 90% 的（视为片段/剪辑），再按搜索排序取第一条。
-       这样「雨爱司凤版」这种同名多版本会选到最长、最完整的那版，而「失眠飞行」这种
-       几毫秒时长差的同一录音仍按搜索相关性取原唱。
+    2. 给了 ``artist`` 才按歌手过滤；没有任何候选的歌手包含它时，记一行
+       ``artist_filter_ignored``，改把它当版本别名（只留别名里含这个词的候选），
+       一个都没有就判「没有能确认的版本」；
+    3. 匹配只分两档（见 :func:`_match_tier`）：完全相等优先，其次是剩余字符全部来自别名的包含；
+    4. 同档取舍：先剔除时长不到同档最长候选 90% 的（片段/剪辑），再按搜索顺序取第一条。
+
+    不再有标题长度打分、歌手加分、标题互相包含之类的模糊规则。
 
     Returns:
         ``(候选 或 None, 状态, 统计)``。状态取 ``ok`` / ``empty`` / ``no_match`` /
@@ -272,56 +311,66 @@ def pick_best_song(
         stats.matched = 1
         return first, "ok", stats
 
-    matches: list[tuple[int, int, int, SongCandidate]] = []
-    for rank, candidate in enumerate(usable):
+    # 1) 先排除伴奏类：这些版本没有人声，选中也只会出静音
+    playable: list[SongCandidate] = []
+    for candidate in usable:
         if is_accompaniment(candidate.name, candidate.alias):
             stats.excluded += 1
             continue
-        title = normalize_text(candidate.name)
-        if not title:
-            continue
-        aliases = normalize_text(candidate.alias)
-        singer = normalize_text(candidate.artists)
+        playable.append(candidate)
+    if not playable:
+        return None, "only_accompaniment", stats
 
-        if title in normalized_query:
-            extra = normalized_query.replace(title, "", 1)
-        elif normalized_query in title:
-            extra = ""
+    # 2) 歌手只在明确给了的情况下过滤；没人命中就改当版本别名用，不因它判失败
+    if normalized_artist:
+        by_singer = [
+            candidate
+            for candidate in playable
+            if normalized_artist in normalize_text(candidate.artists)
+        ]
+        if by_singer:
+            playable = by_singer
         else:
-            continue
+            logger.info(
+                f"artist_filter_ignored | song={query} | artist={artist} | "
+                "没有任何候选的歌手包含它，改按别名里的版本词匹配"
+            )
+            by_alias = [
+                candidate
+                for candidate in playable
+                if normalized_artist in normalize_text(candidate.alias)
+            ]
+            if not by_alias:
+                stats.matched = 0
+                return None, "no_match", stats
+            playable = by_alias
 
-        if normalized_artist and normalized_artist not in singer:
-            continue
-        if extra and not normalized_artist:
-            # 多出来的版本说明要能在「别名 + 歌手」里找到（顺序不限）
-            combined = aliases + singer
-            if extra not in combined and extra not in (singer + aliases):
-                continue
-
-        score = len(title) * 2
-        if title == normalized_query:
-            score += 100
-        if normalized_artist:
-            score += 100
-        if normalize_text(candidate.name + candidate.alias) == normalized_query:
-            score += 30
-        matches.append((score, rank, candidate.duration_ms, candidate))
-
+    # 3) 分档：完全相等 > 可解释的包含
+    matches: list[tuple[int, int, SongCandidate]] = []
+    for rank, candidate in enumerate(playable):
+        tier = _match_tier(candidate, normalized_query)
+        if tier:
+            matches.append((tier, rank, candidate))
     if not matches:
-        status = "only_accompaniment" if stats.excluded == len(usable) else "no_match"
+        status = "only_accompaniment" if stats.excluded else "no_match"
         return None, status, stats
 
-    best_score = max(item[0] for item in matches)
-    top = [item for item in matches if item[0] == best_score]
-    longest = max(item[2] for item in top)
+    best_tier = max(item[0] for item in matches)
+    top = [item for item in matches if item[0] == best_tier]
+
+    # 4) 同档取舍：剔除明显是片段的（不足同档最长 90%），再按搜索顺序
+    longest = max(item[2].duration_ms for item in top)
     if longest > 0:
-        # 时长明显短一截（<90%）的是片段/剪辑，同分时排后面
-        kept = [item for item in top if item[2] and item[2] >= longest * 0.9]
+        kept = [
+            item
+            for item in top
+            if item[2].duration_ms <= 0 or item[2].duration_ms >= longest * 0.9
+        ]
         if kept:
             top = kept
     top.sort(key=lambda item: item[1])
     stats.matched = 1
-    return top[0][3], "ok", stats
+    return top[0][2], "ok", stats
 
 
 def pick_best_song_dict(
@@ -1146,17 +1195,13 @@ class SourceRouter:
         }
 
     def _search_keywords(self, request: dict) -> list[str]:
-        """搜歌关键词：先只用歌名，再补一个「歌名 + 第一位歌手」。"""
+        """搜歌关键词：只用 song_name 原文整串，不拼歌手、不拆版本。
+
+        0.8.0 起不再补「歌名 + 歌手」这种关键词：用户怎么说的就怎么搜，
+        歌手只当过滤条件，避免把「司凤」这类版本词拼进搜索词后带偏结果。
+        """
         name = str(request.get("name") or "").strip()
-        if not name:
-            return []
-        keywords = [name]
-        artists = str(request.get("artists") or "").strip()
-        if artists:
-            first = re.split(r"[、/,，&]", artists, maxsplit=1)[0].strip()
-            if first and first.casefold() not in name.casefold():
-                keywords.append(f"{name} {first}")
-        return keywords
+        return [name] if name else []
 
     @staticmethod
     def _compose_reason(attempts: list[SourceAttempt]) -> str:
