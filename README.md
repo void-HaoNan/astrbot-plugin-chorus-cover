@@ -4,7 +4,7 @@
 
 本项目的取歌与下载逻辑借用了 [astrbot_plugin_music](https://github.com/Zhalslar/astrbot_plugin_music) 的实现思路。
 
-- 版本：`0.9.0`
+- 版本：`0.10.0`
 - 作者：void-HaoNan
 - 仓库：<https://github.com/void-HaoNan/astrbot-plugin-chorus-cover>
 - 许可：AGPL-3.0（见文末「许可与出处」）
@@ -34,6 +34,7 @@
 ## 功能
 
 - **只做 RVC**：一个推理引擎、一条链路；没有 SVC、没有参考音色，设置页里也不会出现无效开关。
+- **音色/音量全在设置页**：`f0_method`、`index_rate`、`rms_mix_rate`、`protect`、`inst_volume_db`、`vocal_volume_db` 都会按名字传给中间层（chorus-mw 0.8.0 起真的生效），调完下一次翻唱就能听出来。
 - **多音源取歌**：`source_order` 决定顺序与启停，默认网易云 → 酷狗 → 酷我 → QQ 音乐；前一个源没成自动换下一个，日志里每个源一行结论。
 - **匹配规则确定**：歌名整串原样搜；别名只在「标题+别名 == 歌名」时命中；歌手只在用户明确说出时当过滤条件；伴奏类候选直接淘汰。
 - **80 秒闸门**：下载后量真实时长，太短的片段/试听不给翻唱。
@@ -59,6 +60,21 @@
 `full` 的耗时可能是副歌模式的 5~10 倍，显存占用也更高（长音频会把显存吃到接近上限后降速）。要整首翻唱，请同时调大 `inference_timeout` 与 `task_timeout_seconds`。
 
 插件会自动探测后端是否支持 `render_mode`：后端没有这个参数就整组不传，按副歌模式处理，升级中间层前后都能用。换 `render_mode` 或 `chorus_seconds` 会换缓存 key，不同模式不会互相命中。
+
+## 音色与音量怎么调
+
+这六项在插件设置里改，中间层每次请求都按名字收，调完下一次翻唱就生效（不用重启）：
+
+| 配置项 | 默认 | 范围 | 调大 / 调小分别会怎样 | 推荐 |
+| --- | --- | --- | --- | --- |
+| `f0_method` | `rmvpe` | `rmvpe` / `pm` / `crepe` / `harvest` | `rmvpe` 最稳、适合干净人声；`pm` 最快、质量一般；`crepe` 更吃显卡；`harvest` 跑调时再试 | 先用 `rmvpe` |
+| `index_rate` | `0.75` | 0~1 | 调大更贴模型音色、但容易生硬；调小模型自由发挥更多、可能偏离音色 | 0.6~0.85；沙哑/电音时试 0.3~0.5 |
+| `rms_mix_rate` | `0.35` | 0~1 | 调大更贴原唱的音量起伏、更自然，人声可能被压小；调小音量更平稳、人声更冲，太小会发闷 | 0.3~0.5 |
+| `protect` | `0.33` | 0~0.5 | 调大保护齿音/换气/气声，撕裂和沙音更少；调小更贴音色，但容易出电流味 | 0.33 左右；失真时 0.4~0.5 |
+| `inst_volume_db` | `-6` | -20~0 | 调大（往 0）伴奏更响、现场感强；调小（往 -20）伴奏更弱、几乎只剩人声 | -6；人声被盖住就 -10 |
+| `vocal_volume_db` | `0` | -12~+12 | 调大人声更靠前更抢耳；调小人声往后退、像混在伴奏里 | 0；人声太尖 -3，太弱 +3 |
+
+`filter_radius` 也在设置里，但中间层 0.8.0 只把它记进日志（RVC WebUI 那一版没有对应入参），暂时不会改变成品——设置页写清楚了，别指望它调音。
 
 ## 环境与安装
 
@@ -91,11 +107,11 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 | `/cache_info` / `/clear_cache` | 缓存查看 / 清理 | 可选 |
 | `/show_msst_models` / `/select_msst_model` | 分离模型列表 / 切换 | 可选（没有就自动跳过） |
 
-参数是**按名字探测**的：后端 `/convert` 里没有 `render_mode` 就整组不传，没有 MSST 参数就沿用后端配置，不会因为多传参数报错。
+参数是**按名字探测**的：后端 `/convert` 里没有 `render_mode` 就整组不传，没有 MSST 参数就沿用后端配置，没有 0.8.0 新增的 `rms_mix_rate` / `protect` / `inst_volume_db` / `vocal_volume_db` 也不传，不会因为多传参数报错。
 
 本仓库配套的中间层是 `chorus-mw`：它自己拉起 RVC 整合包、切副歌、分离、移调、混音，插件只要给它一个音频路径。
 
-> 注意：哪些参数真正生效由后端决定。`f0_method`、`index_rate`、`filter_radius`、`reverb_intensity`、`delay_intensity`、`uvr5_*`、`msst_*`、`vocal_postprocess` 属于「后端支持就生效」的可选参数，`chorus-mw` 当前版本会忽略其中一部分（用后端自己的默认值）；换成会读这些参数的 RVC 后端时它们就生效。
+> 注意：哪些参数真正生效由后端决定。`chorus-mw` **0.8.0 起**会真的使用 `f0_method`、`index_rate`、`rms_mix_rate`、`protect`、`inst_volume_db`、`vocal_volume_db`（传进 RVC 推理和混音），日志里每次请求打一行 `params ...` 可核对；`filter_radius` 只记日志、暂不生效。老后端仍是「后端支持就生效」。
 
 ## 命令表
 
@@ -172,9 +188,13 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 |---|---|---|
 | `render_mode` | `chorus` | `chorus` 副歌 / `full` 整首 / `custom` 自定义 |
 | `chorus_seconds` | `45` | `custom` 模式的时长，20~180 秒 |
-| `f0_method` | `rmvpe` | RVC 音高提取算法（`rmvpe` / `crepe` / `harvest` / `pm`） |
+| `f0_method` | `rmvpe` | RVC 音高提取算法（`rmvpe` / `pm` / `crepe` / `harvest`） |
 | `index_rate` | `0.75` | 特征检索比率 0~1，越高越贴模型音色 |
-| `filter_radius` | `3` | F0 中值滤波半径，0~7 |
+| `filter_radius` | `3` | F0 中值滤波半径 0~10；中间层 0.8.0 只记日志、暂不生效 |
+| `rms_mix_rate` | `0.35` | 0~1，越高越贴原唱的音量包络 |
+| `protect` | `0.33` | 0~0.5，越大越保护清音/气声，越不容易撕裂 |
+| `inst_volume_db` | `-6` | -20~0，伴奏音量（dB，负数是压小） |
+| `vocal_volume_db` | `0` | -12~+12，人声音量（dB，0 为原样） |
 | `reverb_intensity` | `4` | 混响强度 0~10 |
 | `delay_intensity` | `0` | 回声/延迟强度 0~10 |
 | `shift_accompaniment` | `true` | 升降调时伴奏跟着一起移调 |
@@ -323,6 +343,7 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 
 只记最近几条，完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
+- **v0.10.0**：设置页补齐 `rms_mix_rate` / `protect` / `inst_volume_db` / `vocal_volume_db` 并按名字传给 `/convert`；配合 chorus-mw 0.8.0，`index_rate` 等推理参数与两条轨道的音量真正生效（不再写死）。
 - **v0.9.0**：收窄为纯 RVC 插件，移除另外两套语音转换引擎与旧 QQ 音乐相关命令和配置，设置页只留生效项。
 - **v0.8.0**：选歌判定改成确定规则（整串当歌名、歌手仅明确指定时生效、别名拼接匹配、伴奏排除）。
 - **v0.7.0**：多音源路由（网易云 → 酷狗 → 酷我 → QQ 音乐，可配顺序）。

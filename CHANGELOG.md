@@ -6,6 +6,36 @@
 0.9.0 之前的条目保留发布当时的原文；其中提到的引擎、命令与配置已在 0.9.0 移除，
 现在只剩 RVC 一条链路，以本文件最上方与 `README.md` 为准。
 
+## v0.10.0（2026-10-27）
+
+**影响翻唱效果的参数补齐并真的传下去**。此前设置页只有 `index_rate` 等少数几项，
+而且下游中间层把值写死在 `config.py`，改了没效果。
+
+### 变更
+
+- 新增 4 个配置项，全部中文说明 + 默认值 + 范围：
+  - `rms_mix_rate`（float，0~1，默认 0.35）：人声音量起伏贴合原唱的程度。
+  - `protect`（float，0~0.5，默认 0.33）：保护清音/气声，越大越不容易撕裂。
+  - `inst_volume_db`（float，-20~0，默认 -6）：伴奏音量（dB）。
+  - `vocal_volume_db`（float，-12~+12，默认 0）：人声音量（dB）。
+- `main.py` 启动时读取这 4 项（并夹到范围内，非法值回落默认并记 warning），
+  在 `_predict_cover` 里通过 `_get_mix_kwargs()` **按名字**传给 `/convert`：
+  `rms_mix_rate` / `protect` / `inst_volume_db` / `vocal_volume_db`。
+  和 `render_mode` 一样先探测后端 `/info` 的参数表，老后端没有这些参数就不传，
+  不会因为多传参数整次失败；日志里会提示「升级 chorus-mw 到 0.8.0」。
+- `index_rate` 改走统一的 `_bounded_float()`，与其它浮点项一样做范围兜底。
+- 设置页说明改写成人话：写清「调大/调小会怎样」和推荐区间；`filter_radius`
+  注明「chorus-mw 0.8.0 只记日志、暂不生效」，不假装能用。
+- 版本号 → `0.10.0`，README 配置表补 4 项并新增「音色与音量怎么调」一节。
+
+### 验证
+
+- 配合 `chorus-mw` 0.8.0 真实跑：`index_rate=0.3` vs `0.9` 成品不同
+  （波形相关 0.9879、200–8000 Hz 频谱平均差 3.26 dB；同参数重跑逐样本一致，
+  证明差异来自参数而非随机性）；`inst_volume_db=-6` vs `-12` 低频能量占比
+  27.92% → 18.03%；`f0_method=rmvpe` / `pm` 均跑通，日志分别打了 `f0=rmvpe` / `f0=pm`。
+- `_conf_schema.json` 通过 `json.loads`；`main.py` 通过 `py_compile`。
+
 ## v0.9.0（2026-10-27）
 
 **收窄为纯 RVC 插件**：移除 SVC 与 SoulX 参考音色两套引擎的命令与配置，以及已下线的 QQ 音源兼容项；

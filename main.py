@@ -31,6 +31,23 @@ from .intent_gate import cover_refusal, is_music_request, message_text as event_
 MODEL_ALIAS_SEPARATOR = "|||"
 
 
+def _bounded_float(config: Any, key: str, default: float, low: float, high: float) -> float:
+    """读一个浮点配置并夹到 [low, high]。
+
+    设置页的输入不一定可信（老配置可能存成字符串、也可能被人手改成越界值），
+    统一在这里兜底，免得一个坏值让整次翻唱失败。
+    """
+    try:
+        value = float(config.get(key, default))
+    except (TypeError, ValueError):
+        logger.warning(f"{key} 配置格式错误，使用默认值 {default}")
+        value = float(default)
+    clamped = max(float(low), min(float(high), value))
+    if clamped != value:
+        logger.warning(f"{key}={value} 超出 {low}~{high}，按 {clamped} 处理")
+    return clamped
+
+
 class _OutboundTarget:
     """把"主动发给指定会话"包装成 outbound 能用的最小 event 形状。
 
@@ -65,7 +82,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.9.0",
+    "0.10.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -182,12 +199,15 @@ class MusicPlugin(Star):
         self.rvc_default_model = str(config.get("rvc_default_model", "") or "").strip()
         self.default_key_shift = config.get("default_key_shift", 0)
         self.f0_method = config.get("f0_method", "rmvpe")
-        try:
-            self.index_rate = float(config.get("index_rate", "0.75"))
-        except (ValueError, TypeError):
-            logger.warning("index_rate 配置格式错误，使用默认值 0.75")
-            self.index_rate = 0.75
+        self.index_rate = _bounded_float(config, "index_rate", 0.75, 0.0, 1.0)
         self.filter_radius = config.get("filter_radius", 3)
+        # === 0.8.0 中间层真正会用的采样/混音参数 ===
+        # 中间层 0.8.0 起把这些值按名字传进 RVC（index_rate/rms_mix_rate/protect/f0）
+        # 和混音（inst_volume_db/vocal_volume_db）；老后端会在提交前按参数表探测、缺了就不传。
+        self.rms_mix_rate = _bounded_float(config, "rms_mix_rate", 0.35, 0.0, 1.0)
+        self.protect = _bounded_float(config, "protect", 0.33, 0.0, 0.5)
+        self.inst_volume_db = _bounded_float(config, "inst_volume_db", -6.0, -20.0, 0.0)
+        self.vocal_volume_db = _bounded_float(config, "vocal_volume_db", 0.0, -12.0, 12.0)
         self.reverb_intensity = config.get("reverb_intensity", 4)
         self.delay_intensity = config.get("delay_intensity", 0)
         self.shift_accompaniment = config.get("shift_accompaniment", True)
@@ -1266,6 +1286,7 @@ class MusicPlugin(Star):
         async with self._get_gradio_client(base_url) as client:
             msst_kwargs = await self._get_optional_msst_kwargs(client, base_url)
             render_kwargs = self._get_render_kwargs(client)
+            mix_kwargs = self._get_mix_kwargs(client)
             legacy_kwargs = {
                 "song_name_src": song_name_src,
                 "key_shift": int(key_shift or 0),
@@ -1287,6 +1308,7 @@ class MusicPlugin(Star):
                 "f0_method": self.f0_method,
                 "index_rate": self.index_rate,
                 "filter_radius": self.filter_radius,
+                **mix_kwargs,
                 **msst_kwargs,
                 **render_kwargs,
             }
@@ -1970,6 +1992,39 @@ class MusicPlugin(Star):
         values = {"render_mode": self.render_mode}
         if "chorus_seconds" in parameter_names:
             values["chorus_seconds"] = self.chorus_seconds
+        return values
+
+    def _get_mix_kwargs(self, client) -> Dict[str, Any]:
+        """把采样/混音参数按名字传给支持它们的后端（chorus-mw 0.8.0 起）。
+
+        这几个是 0.8.0 才加到 /convert 的：按名字探测，后端没有就不传，
+        由后端用自己的默认值，避免老后端因为「不认识的参数」整次失败。
+        传过去的都是真实配置值，不是占位符。
+        """
+        values = {
+            "rms_mix_rate": self.rms_mix_rate,
+            "protect": self.protect,
+            "inst_volume_db": self.inst_volume_db,
+            "vocal_volume_db": self.vocal_volume_db,
+        }
+        parameter_names = self._client_api_parameter_names(client, "/convert")
+        if parameter_names is None:
+            if not getattr(self, "_mix_kwargs_warned", False):
+                self._mix_kwargs_warned = True
+                logger.warning(
+                    "读不到后端 /convert 的参数表，本次不提交采样/混音参数"
+                    "（后端会用自身默认值）；确认 rvc_base_url 可访问后重试"
+                )
+            return {}
+        missing = [key for key in values if key not in parameter_names]
+        if missing:
+            if not getattr(self, "_mix_kwargs_warned", False):
+                self._mix_kwargs_warned = True
+                logger.warning(
+                    f"当前 RVC 中间层不支持 {', '.join(missing)}，这些设置本次不生效；"
+                    "把 chorus-mw 升级到 0.8.0 并重启 3333 后可用"
+                )
+            return {key: value for key, value in values.items() if key in parameter_names}
         return values
 
 
