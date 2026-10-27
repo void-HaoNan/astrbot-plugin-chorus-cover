@@ -50,15 +50,15 @@
     "maximum": 10
   },
   "disable_netease": {
-    "description": "禁用网易云音乐点歌（已无效）",
+    "description": "禁用网易云音乐搜歌（兼容项，已无效）",
     "type": "bool",
-    "hint": "0.3.0 起只剩网易云这一条取歌链路，开启此项也会按网易云继续，仅记一条警告日志。",
+    "hint": "0.7.0 起音源由 source_order 控制：想跳过网易云，把 source_order 里的 netease 删掉即可。此开关只为兼容旧配置保留，改它不会生效。",
     "default": false
   },
   "disable_qqmusic": {
-    "description": "只用网易云搜歌（已锁死）",
+    "description": "只用网易云搜歌（兼容项，已无效）",
     "type": "bool",
-    "hint": "已锁死只用网易云：QQ 音源下线，搜歌和取歌都只走网易云官方接口 + cookie。此项固定为 true，改成 false 也不会再启用 QQ。",
+    "hint": "0.7.0 起是否用 QQ 音乐由 source_order 决定（默认排第四）。此开关只为兼容旧配置保留，改它不会生效。",
     "default": true
   },
   "netease_cookie": {
@@ -92,6 +92,17 @@
     "type": "string",
     "hint": "备用取歌服务需要鉴权时填这里，插件会带上 Authorization: Bearer <令牌>。默认的 zm.wwoyun.cn 不需要，留空即可。",
     "default": ""
+  },
+  "source_order": {
+    "description": "取歌音源顺序（同时决定启停）",
+    "type": "list",
+    "hint": "按列表顺序依次尝试：前一个平台搜不到、选不出或下载不下来，就自动换下一个，日志里每个平台一行结果。默认顺序：netease（网易云）→ kugou（酷狗）→ kuwo（酷我）→ qqmusic（QQ音乐）。每行写一个英文平台标识，只认这四个；删掉某一行就等于停用该平台，列表清空则退回默认顺序。顺序里的第一个源通常是主源；网易云用本插件自己的取歌链路，酷狗/酷我/QQ 音乐复用点歌插件 astrbot_plugin_music 的平台实现和配置（QQ 音乐需要点歌插件里配置了 uin，否则自动跳过并记日志）。",
+    "default": [
+      "netease",
+      "kugou",
+      "kuwo",
+      "qqmusic"
+    ]
   },
   "alert_admin_on_cookie_expired": {
     "description": "网易云 cookie 连续失效时提醒管理员",

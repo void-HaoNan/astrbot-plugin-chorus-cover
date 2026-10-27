@@ -23,6 +23,15 @@ def _extract_mid(obj: Any) -> Optional[str]:
     mid = obj.mid if hasattr(obj, "mid") else (obj if isinstance(obj, str) else None)
     return mid or None
 
+
+def _alias_text(value: Any) -> str:
+    """把别名字段（字符串 / 列表）拼成一段文本；没有就返回空串。"""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        return " / ".join(str(item).strip() for item in value if str(item).strip())
+    return ""
+
 # 偷来的key
 PARAMS = "D33zyir4L/58v1qGPcIPjSee79KCzxBIBy507IYDB8EL7jEnp41aDIqpHBhowfQ6iT1Xoka8jD+0p44nRKNKUA0dv+n5RWPOO57dZLVrd+T1J/sNrTdzUhdHhoKRIgegVcXYjYu+CshdtCBe6WEJozBRlaHyLeJtGrABfMOEb4PqgI3h/uELC82S05NtewlbLZ3TOR/TIIhNV6hVTtqHDVHjkekrvEmJzT5pk1UY6r0="
 ENC_SEC_KEY = "45c8bcb07e69c6b545d3045559bd300db897509b8720ee2b45a72bf2d3b216ddc77fb10daec4ca54b466f2da1ffac1e67e245fea9d842589dc402b92b262d3495b12165a721aed880bf09a0a99ff94c959d04e49085dc21c78bbbe8e3331827c0ef0035519e89f097511065643120cbc478f9c0af96400ba4649265781fc9079"
@@ -87,6 +96,9 @@ class NetEaseMusicAPI:
                 "name": song["name"],
                 "artists": "、".join(artist["name"] for artist in song["artists"]),
                 "duration": song["duration"],
+                "alias": _alias_text(
+                    song.get("alias") or song.get("alia") or song.get("tns") or ""
+                ),
             }
             for song in songs[:limit]
         ]
@@ -169,6 +181,9 @@ class NetEaseMusicAPINodeJs:
                 "name": song["name"],
                 "artists": "、".join(artist["name"] for artist in song["artists"]),
                 "duration": song["duration"],
+                "alias": _alias_text(
+                    song.get("alias") or song.get("alia") or song.get("tns") or ""
+                ),
             }
             for song in songs[:limit]
         ]

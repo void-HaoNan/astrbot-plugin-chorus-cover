@@ -24,6 +24,7 @@ from functools import partial
 from gradio_client import Client
 
 from . import netease_fetch
+from . import source_router
 from .selection import CoverSelectionUI
 from .outbound import Outbound
 from .intent_gate import cover_refusal, is_music_request, message_text as event_message_text
@@ -65,7 +66,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱（自维护分支，基于 matsuko_cover 2.13.0，AGPL-3.0）：对话出口统一走模型、失败结果结构化",
-    "0.6.0",
+    "0.7.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -81,13 +82,15 @@ class MusicPlugin(Star):
         
         self.default_api = config.get("default_api", "netease_nodejs")
         self.nodejs_base_url = config.get("nodejs_base_url", "https://163api.qijieya.cn")
-        # 0.3.0：QQ 音源下线，搜歌和取歌都只走网易云。下面两个开关只为兼容旧配置
-        # 保留读取，无论配置怎么写都不会再调 QQ；disable_qqmusic 固定为 True。
+        # 0.7.0：搜歌/取歌用哪个平台由 source_order 决定（默认网易云 → 酷狗 → 酷我 →
+        # QQ 音乐）。下面两个旧开关只为兼容旧配置保留读取，不再影响实际链路。
         self.enable_qqmusic = bool(config.get("enable_qqmusic", False))
         self.disable_netease = bool(config.get("disable_netease", False))
         self.disable_qqmusic = True
         if self.disable_netease:
-            logger.warning("disable_netease 已开启，但 0.3.0 只有网易云这一条路，按网易云继续")
+            logger.warning(
+                "disable_netease 已不生效：0.7.0 起想跳过网易云请从 source_order 里删掉 netease"
+            )
         self.timeout = config.get("timeout", 60)
         self.selection_ui = CoverSelectionUI(
             buttons=bool(config.get("qq_official_buttons", True)),
@@ -135,6 +138,32 @@ class MusicPlugin(Star):
             meting_base=self.netease_meting_base,
             api_base=self.netease_api_base,
             api_token=str(config.get("netease_api_token", "") or "").strip(),
+        )
+        # === 多音源路由（0.7.0）：按 source_order 依次尝试，前一个没成自动换下一个 ===
+        # 网易云用上面这个取歌器（原单源逻辑），酷狗/酷我/QQ 音乐动态 import
+        # 点歌插件 astrbot_plugin_music 的现成平台类，配置也从它那里读。
+        plugin_dir = Path(__file__).resolve().parent
+        self.source_order = source_router.normalize_source_order(
+            config.get("source_order", list(source_router.DEFAULT_SOURCE_ORDER))
+        )
+        self.song_router = source_router.SourceRouter(
+            source_order=self.source_order,
+            netease_fetcher=self.netease_fetcher,
+            dest_dir=self._netease_temp_dir(),
+            music_plugin_dir=plugin_dir.parent / "astrbot_plugin_music",
+            music_config_path=(
+                plugin_dir.parent.parent
+                / "config"
+                / "astrbot_plugin_music_config.json"
+            ),
+            timeout=self.music_api_timeout,
+            download_timeout=max(60, self.timeout),
+            limit=10,
+            quality_br=self._netease_quality_br(),
+        )
+        logger.info(
+            f"[音源路由] 顺序：{source_router.describe_order(self.source_order)}"
+            "（改插件配置 source_order 可调整顺序/停用某个源）"
         )
         self.alert_admin_on_cookie_expired = bool(
             config.get("alert_admin_on_cookie_expired", True)
@@ -995,40 +1024,7 @@ class MusicPlugin(Star):
         if self._netease_cookie_fail_streak >= 3:
             await self._notify_cookie_expired(event, reason)
 
-    async def _fetch_netease_audio(
-        self, event: AstrMessageEvent, song_id: str, song_name: str = ""
-    ) -> tuple[Optional[str], str, bool]:
-        """取网易云整首歌：走点歌插件那套（meting 直链 → 下载 → 80 秒闸门）。
-
-        底层是 ``netease_fetch.NeteaseFetcher``：先问 meting 要直链（点歌插件
-        ``netease`` 平台的做法，不吃 cookie），拿不到再换 NodeJS 服务
-        （点歌插件 ``netease_api`` 平台的做法，带 cookie 能下会员歌）。
-        下载完统一用 ffprobe 过 80 秒闸门。
-
-        Returns:
-            ``(本地文件路径 或 None, 失败原因, 是否试听)``。成功时失败原因为空串。
-        """
-        dest_dir = self._netease_temp_dir()
-        if not str(getattr(self, "netease_cookie", "") or "").strip():
-            logger.debug("[取歌] 没配置 netease_cookie，走 meting 公开直链（会员歌可能只给试听）")
-
-        await self._send_progress_notice(event, step="正在取网易云直链", song=song_name)
-        path, reason, is_trial = await self.netease_fetcher.fetch_song(
-            song_id, dest_dir, self._netease_quality_br()
-        )
-        if path:
-            self._reset_netease_cookie_state()
-            logger.info(f"[取歌] 网易云整首取到: id={song_id} file={path}")
-            return path, "", False
-
-        logger.warning(
-            f"[取歌] 网易云没拿到整首: id={song_id} song={song_name or '未命名'} "
-            f"reason={reason} trial={is_trial}"
-        )
-        await self._record_netease_cookie_failure(event, reason, is_trial)
-        return None, reason, is_trial
-
-    # ==================== 统一取歌入口（0.2.1） ====================
+    # ==================== 统一取歌入口（0.7.0：多音源路由） ====================
 
     #: QQ 音乐 mid：字母数字混合。老格式 11~12 位，但现在真实 mid 是 14 位
     #: （实测 ``0039MnYb0qxYhV`` / ``003YYGKC1DTKmZ`` 都是 14 位），所以按 11~14 位认。
@@ -1072,123 +1068,16 @@ class MusicPlugin(Star):
 
         return NetEaseMusicAPI(), True
 
-    async def _search_netease_songs(
-        self, keyword: str, limit: int = 10
-    ) -> tuple[list, str]:
-        """按歌名搜网易云，返回 ``(歌曲列表, 失败原因)``。
-
-        先用点歌插件那套搜索（``music.163.com/api/search/get/web``），失败或没结果
-        再退回插件原来的搜索器；两者返回的都是 ``{id, name, artists}`` 形状的 dict。
-        """
-        keyword = str(keyword or "").strip()
-        if not keyword:
-            return [], "没有歌名"
-
-        try:
-            songs = await asyncio.wait_for(
-                self.netease_fetcher.search_songs(keyword, limit),
-                timeout=self.music_api_timeout,
-            )
-        except Exception as exc:
-            logger.warning(f"[取歌] 点歌插件那套搜索失败（{keyword}）: {exc}")
-            songs = []
-        if songs:
-            return list(songs), ""
-
-        api, temporary = self._netease_search_api()
-        try:
-            songs = await asyncio.wait_for(
-                api.fetch_data(keyword=keyword, limit=limit),
-                timeout=self.music_api_timeout,
-            )
-            return list(songs or []), ""
-        except Exception as exc:
-            logger.warning(f"网易云按名搜索失败（{keyword}）: {exc}")
-            return [], "网易云搜索失败"
-        finally:
-            if temporary:
-                try:
-                    await api.close()
-                except Exception as exc:
-                    logger.debug(f"关闭临时网易云搜索会话失败: {exc}")
-
     @staticmethod
     def _pick_best_song(songs: list, query: str, artist: str = "") -> dict:
         """在搜索结果里挑**最确定**的一首；一个都不像就返回空 dict。
 
-        借自点歌插件 astrbot_plugin_music 的 ``pick_best_song``：宁可不选，也不选错。
-        规则：
-        1. 归一化（去掉标点/空白、转小写）后，候选歌名必须与查询互为子串，否则淘汰；
-        2. 指定了歌手时，歌手必须包含在候选歌手串里，否则淘汰；
-        3. 查询里多出来的词（比如「0.9」「深情版」）必须能在歌手或歌名里找到，否则淘汰；
-        4. 打分：歌名长度×2，完全相等 +100，歌手命中 +100，取最高分。
+        0.7.0 起匹配统一走 ``source_router.pick_best_song``：候选的匹配文本从
+        「歌名 + 歌手」扩成「歌名 + 别名 + 歌手」，并先淘汰伴奏类版本；
+        同分时的取舍（片段剔除、搜索排序）也由路由模块统一处理。
+        这里保留这个入口，只是把 dict 列表转成候选再转回来。
         """
-        import re
-
-        def normalize(value: str) -> str:
-            return re.sub(r"[\W_]+", "", str(value or "").casefold())
-
-        candidates = [s for s in (songs or []) if isinstance(s, dict)]
-        if not candidates:
-            return {}
-
-        normalized_query = normalize(query)
-        expected_artist = normalize(artist)
-        if not normalized_query:
-            return candidates[0] if not expected_artist else {}
-
-        matches = []
-        for song in candidates:
-            title = normalize(song.get("name") or "")
-            singer = normalize(song.get("artists") or "")
-            if not title:
-                continue
-
-            if title in normalized_query:
-                extra = normalized_query.replace(title, "", 1)
-            elif normalized_query in title:
-                extra = ""
-            else:
-                continue
-
-            if expected_artist and expected_artist not in singer:
-                continue
-            if extra and not expected_artist:
-                if extra not in singer and extra not in title:
-                    continue
-
-            score = len(title) * 2
-            if title == normalized_query:
-                score += 100
-            if expected_artist:
-                score += 100
-            matches.append((score, song))
-
-        if not matches:
-            return {}
-        return max(matches, key=lambda item: item[0])[1]
-
-    async def _search_netease_id(self, keyword: str, artist: str = "") -> tuple[str, str]:
-        """按歌名搜网易云，挑最匹配的一首取数字 id；返回 ``(id 或空串, 失败原因)``。"""
-        songs, reason = await self._search_netease_songs(keyword, limit=10)
-        if not songs:
-            return "", reason or "没搜到"
-        best = self._pick_best_song(songs, keyword, artist)
-        if not best:
-            logger.info(
-                f"[取歌] 网易云搜到 {len(songs)} 条，但没有一条能确认是这首"
-                f"（关键词={keyword}，歌手={artist or '未指定'}）"
-            )
-            return "", "没有一条能确认是这首（可能只有翻唱、改名或版权受限）"
-        song_id = str(best.get("id") or "").strip()
-        if not song_id.isdigit():
-            logger.warning(f"网易云搜索命中的 id 不是数字（{song_id!r}），按没搜到处理")
-            return "", "搜到的 id 不是数字"
-        logger.info(
-            f"[取歌] 网易云按名搜索命中: {keyword} → id={song_id}"
-            f"（{best.get('name')} - {best.get('artists')}）"
-        )
-        return song_id, ""
+        return source_router.pick_best_song_dict(songs, query, artist)
 
     @staticmethod
     def _drop_file(path: str) -> None:
@@ -1212,22 +1101,27 @@ class MusicPlugin(Star):
     ) -> tuple[Optional[str], str, bool]:
         """统一取歌入口：把"歌曲对象 / 歌名 / 网易云 id / 旧的 QQ mid"变成本地音频文件。
 
-        判定顺序（0.3.0，所有取歌路径都只从这里出去）：
+        0.7.0 起所有取歌路径都交给 :class:`source_router.SourceRouter`：
 
-        1. 已经是存在的本地文件 → 直接返回；
-        2. 纯数字 → 当网易云 id，走点歌插件那套取歌（meting → NodeJS 服务），过 80 秒闸门；
-        3. ``^[0-9A-Za-z]{11,14}$`` 且含字母 → 只剩 QQ mid 的旧数据：不再碰任何
-           QQ 音源，直接按歌名去网易云搜，搜不到就失败；
-        4. 其它 → 当歌名：网易云搜索第一条的 id → 回到第 2 条，搜不到就失败。
+        1. 已经是存在的本地文件 → 直接返回，不联网；
+        2. 其它情况交给路由器按 ``source_order`` 依次尝试各平台：
+           搜歌（带别名）→ 严格匹配 → 排除伴奏类 → 取播放链接 → 下载 → 80 秒闸门；
+        3. 前一个平台搜不到 / 选不出 / 下不下来就自动换下一个，日志里每个平台一行；
+        4. 全部失败时把每个平台的原因串起来返回；如果所有候选都只是伴奏版，
+           原因就是「只有伴奏版」。
 
         Returns:
             ``(本地文件路径 或 None, 失败原因, 是否试听)``。失败原因是简短中文，
-            按顺序把每一步的原因串起来；堆栈和技术细节只进 logger。
+            堆栈和技术细节只进 logger。
         """
         raw_id, name, artists = self._song_identity(song)
         label = name or raw_id or "这首歌"
-        reasons: List[str] = []
-        is_trial = False
+        source_hint = ""
+        if isinstance(song, dict):
+            source_hint = str(song.get("source") or "").strip().casefold()
+        # 酷我 / QQ 的 id 也是纯数字，不能把别家来源的数字 id 当网易云 id 用
+        if raw_id.isdigit() and source_hint not in ("", "netease"):
+            source_hint = ""
 
         # 1) 已经是本地文件：直接交给中间层，别再搜一遍
         for candidate in (raw_id, name):
@@ -1235,51 +1129,52 @@ class MusicPlugin(Star):
                 logger.info(f"[取歌] {label} 已经是本地文件，直接使用: {candidate}")
                 return candidate, "", False
 
+        # 2) 标题/别名带伴奏标记的，明确选了也不拿去翻唱（会出静音）
+        alias_text = ""
+        if isinstance(song, dict):
+            alias_text = str(song.get("alias") or "").strip()
+        if source_router.is_accompaniment(name, alias_text):
+            logger.info(f"[取歌] {label} 标题/别名带伴奏标记，判为没有人声")
+            return None, source_router.REASON_ONLY_ACCOMPANIMENT, False
+
         if not raw_id and not name:
             logger.info("[取歌] 既没有 id 也没有歌名，放弃")
             return None, "没有歌名也没有 id", False
 
-        # 2) 纯数字 → 网易云 id
-        if raw_id.isdigit():
-            logger.info(f"[取歌] {label} 按网易云 id 取: {raw_id}")
-            path, reason, is_trial = await self._fetch_netease_audio(event, raw_id, label)
-            if path:
-                return path, "", False
-            logger.info(f"[取歌] 网易云 id {raw_id} 没拿到: {reason}")
-            return None, f"网易云: {reason}", is_trial
+        await self._send_progress_notice(
+            event, step="正在按顺序找音源", song=label
+        )
+        result = await self.song_router.fetch_audio(
+            {
+                "id": raw_id,
+                "name": name or raw_id,
+                "artists": artists,
+                "source": source_hint,
+            },
+            dest_dir=self._netease_temp_dir(),
+        )
 
-        # 3) 旧的 QQ mid（11~14 位字母数字，纯数字已在上面拦掉）：QQ 音源已下线，
-        #    不再去任何 QQ 接口，只按歌名去网易云搜，搜不到就失败。
-        if self._looks_like_qq_mid(raw_id):
-            keyword = f"{name} {artists}".strip()
-            logger.info(f"[取歌] {label} 是旧的 QQ mid，改按歌名去网易云搜: {keyword}")
-            if not keyword or keyword == raw_id:
-                logger.info(f"[取歌] QQ mid {raw_id} 没有歌名可搜，放弃")
-                return None, "这条是 QQ mid，但拿不到歌名，网易云搜不了", False
-            song_id, search_reason = await self._search_netease_id(keyword, artists)
-            if not song_id:
-                logger.info(f"[取歌] QQ mid {raw_id} 按名搜网易云失败: {search_reason}")
-                return None, f"按歌名搜网易云: {search_reason}", False
-            path, reason, is_trial = await self._fetch_netease_audio(event, song_id, label)
-            if path:
-                return path, "", False
-            logger.info(f"[取歌] QQ mid {raw_id} 搜到 id {song_id} 但没取到: {reason}")
-            return None, f"按歌名搜网易云: {reason}", is_trial
+        # 网易云那条失败照旧计入 cookie 失效提醒（其它源失败不掺和）
+        for attempt in result.attempts:
+            if attempt.source == "netease" and not attempt.ok:
+                await self._record_netease_cookie_failure(
+                    event, attempt.reason, attempt.is_trial
+                )
 
-        # 4) 其它字符串 → 当歌名，先搜网易云拿数字 id
-        keyword = name or raw_id
-        logger.info(f"[取歌] {label} 按歌名取: {keyword}")
-        song_id, search_reason = await self._search_netease_id(keyword, artists)
-        if song_id:
-            path, reason, is_trial = await self._fetch_netease_audio(event, song_id, label)
-            if path:
-                return path, "", False
-            reasons.append(f"网易云 id {song_id}: {reason}")
-        else:
-            reasons.append(f"网易云搜索: {search_reason}")
+        if result.path:
+            self._reset_netease_cookie_state()
+            candidate = result.candidate
+            logger.info(
+                f"[取歌] 整首取到: 来源={result.source} "
+                f"id={candidate.id if candidate else '?'} "
+                f"歌名={candidate.name if candidate else label} "
+                f"时长={(candidate.duration_ms / 1000) if candidate else 0:.1f} 秒 "
+                f"file={result.path}"
+            )
+            return result.path, "", False
 
-        logger.info(f"[取歌] 歌名 {keyword} 全链失败: {'；'.join(reasons)}")
-        return None, "；".join(reasons), is_trial
+        logger.info(f"[取歌] {label} 所有音源都没拿到: {result.reason}")
+        return None, result.reason, result.is_trial
 
 
     def _create_tracked_task(self, coro) -> asyncio.Task:
@@ -3004,18 +2899,46 @@ class MusicPlugin(Star):
             yield event.plain_result("请输入歌名！")
             return
 
-        # 这里明确标着"来源：网易云音乐"，固定用网易云搜索器（0.3.0 起只有这一个源）。
-        songs, search_reason = await self._search_netease_songs(song_name, limit=10)
-        if not songs:
-            logger.info(f"网易云搜歌没结果: {song_name}（{search_reason}）")
+        # 0.7.0：按 source_order 搜歌，哪个平台先有结果就用哪个（默认网易云）
+        candidates, search_reason = await self.song_router.search_candidates(
+            song_name, limit=10
+        )
+        if not candidates:
+            logger.info(f"所有音源搜歌都没结果: {song_name}（{search_reason}）")
             yield event.plain_result("没能找到这首歌~")
             return
+        # 菜单里也不展示纯伴奏版本：选它翻唱只会出静音
+        playable = [
+            candidate
+            for candidate in candidates
+            if not source_router.is_accompaniment(candidate.name, candidate.alias)
+        ]
+        if not playable:
+            logger.info(f"搜到的候选全是伴奏版: {song_name}")
+            await self.outbound.say(
+                event,
+                "failed",
+                song=song_name,
+                reason="只有伴奏版，找不到有人声的版本",
+            )
+            return
+        candidates = playable
+        songs = [candidate.as_dict() for candidate in candidates]
+        source_display = source_router.SOURCE_DISPLAY.get(
+            candidates[0].source, "网易云音乐"
+        )
+
+        def menu_label(song: dict) -> str:
+            label = f"{song['name']} - {song['artists']}"
+            if song.get("alias"):
+                label += f"（{song['alias']}）"
+            return label
 
         try:
             selected_song_index, event = await self.selection_ui.choose(
                 event,
-                f"🎵 {self._engine_display_name(api_type)} · 选择歌曲\n来源：网易云音乐",
-                [f"{song['name']} - {song['artists']}" for song in songs],
+                f"🎵 {self._engine_display_name(api_type)} · 选择歌曲\n来源：{source_display}",
+                [menu_label(song) for song in songs],
                 self.timeout,
             )
             if selected_song_index is None:
@@ -3055,7 +2978,7 @@ class MusicPlugin(Star):
             "🎙️ 开始翻唱",
             f"歌曲：{selected_song['name']}\n歌手：{selected_song['artists']}\n"
             f"引擎：{self._engine_display_name(api_type)}\n音色：{selected_model}\n"
-            f"来源：网易云音乐\n升降调：{key_shift if key_shift is not None else '自动'}\n\n"
+            f"来源：{source_display}\n升降调：{key_shift if key_shift is not None else '自动'}\n\n"
             "已开始生成，完成后会发送音频。",
         )
         await self._send_song(
@@ -3108,12 +3031,18 @@ class MusicPlugin(Star):
             )
             if not song_input:
                 logger.error(f"❌ 取歌失败（song={song_name}）: {prepare_reason}")
+                # 只把事实交给模型：所有音源都只剩伴奏版时，让它说「只有伴奏版」
+                reason = (
+                    "只有伴奏版，找不到有人声的版本"
+                    if prepare_reason == source_router.REASON_ONLY_ACCOMPANIMENT
+                    else f"这首拿不到音源（{prepare_reason}）"
+                )
                 await self.outbound.say(
                     event,
                     "failed",
                     song=song_name,
                     model=model_name,
-                    reason="这首拿不到音源",
+                    reason=reason,
                 )
                 return
             if self._is_temp_audio(song_input):
@@ -3334,8 +3263,9 @@ class MusicPlugin(Star):
                     "【歌曲列表】"
                 ]
                 for i, song in enumerate(songs, 1):
+                    alias = f"（别名：{song['alias']}）" if song.get("alias") else ""
                     result_lines.append(
-                        f"  {i}. 《{song['name']}》 - {song['artists']}"
+                        f"  {i}. 《{song['name']}》 - {song['artists']}{alias}"
                         f"\n     ID: {song['id']}"
                     )
                 
@@ -3350,8 +3280,9 @@ class MusicPlugin(Star):
             else:
                 result_lines = [f"🎵 在{platform_name}找到 {len(songs)} 首相关歌曲："]
                 for i, song in enumerate(songs, 1):
+                    alias = f"（别名：{song['alias']}）" if song.get("alias") else ""
                     result_lines.append(
-                        f"{i}. 《{song['name']}》 - {song['artists']} (ID: {song['id']})"
+                        f"{i}. 《{song['name']}》 - {song['artists']}{alias} (ID: {song['id']})"
                     )
                 result_lines.append(f"\n请告诉用户搜索结果，并询问他们想要翻唱哪首歌（输入序号）。数据来源：{platform_name}")
             
@@ -3558,7 +3489,6 @@ class MusicPlugin(Star):
         flow_id = uuid.uuid4().hex[:8]
         result_path = None
         temp_audio_file = None
-        temporary_search_api = None
         try:
             logger.info(
                 f"[CoverFlow:{flow_id}] stage=start | song={song_name} | "
@@ -3589,40 +3519,35 @@ class MusicPlugin(Star):
             if key_shift is not None and not (min_shift <= key_shift <= max_shift):
                 return f"❌ 音调调整值无效，请在 {min_shift} 到 {max_shift} 之间选择。"
             
-            # === 搜歌：0.3.0 起只用网易云（QQ 音源已下线，不再读音乐源配置）===
+            # === 搜歌：0.7.0 起按 source_order 多音源依次尝试，别名也参与匹配 ===
             actual_music_source = self._resolve_music_source(music_source)
-            search_api, search_api_temporary = self._netease_search_api()
-            if search_api_temporary:
-                temporary_search_api = search_api
-
             logger.info(
                 f"[CoverFlow:{flow_id}] stage=music_search | "
-                f"source={actual_music_source} | timeout={self.music_api_timeout}s"
+                f"order={source_router.describe_order(self.source_order)} | "
+                f"timeout={self.music_api_timeout}s"
             )
-            songs = await asyncio.wait_for(
-                search_api.fetch_data(keyword=song_name, limit=10),
-                timeout=self.music_api_timeout,
+            selected_song, search_reason, _search_attempts = (
+                await self.song_router.find_song(song_name)
             )
 
             logger.info(
-                f"[CoverFlow:{flow_id}] stage=music_search_done | count={len(songs)}"
+                f"[CoverFlow:{flow_id}] stage=music_search_done | "
+                f"hit={bool(selected_song)} | reason={search_reason}"
             )
 
-            if not songs:
-                return f"❌ 未找到歌曲 '{song_name}'。"
-            
-            # 选歌：和点歌插件同一套严格匹配（宁可不选，也不选错）。
-            # 标题必须和搜索词互相包含、歌手对得上，平手时按标题长度和完全相等加分决出；
-            # 一条都不像就不选，交给用户确认，绝不再退化成“取第一条”。
-            selected_song = self._pick_best_song(songs, song_name, "")
             if not selected_song:
                 logger.info(
                     f"[CoverFlow:{flow_id}] stage=no_confident_match | "
-                    f"song={song_name} | candidates={len(songs)}"
+                    f"song={song_name} | reason={search_reason}"
                 )
+                if search_reason == source_router.REASON_ONLY_ACCOMPANIMENT:
+                    return (
+                        f"❌ 《{song_name}》只找到伴奏版（没有人声），翻唱不了，"
+                        "换一个有人声的版本再试。"
+                    )
                 return (
-                    f"❌ 网易云里没找到能确认是《{song_name}》的版本"
-                    "（可能只有翻唱、改名或版权受限），换个更全的歌名试试。"
+                    f"❌ 所有音源都没找到能确认是《{song_name}》的版本"
+                    f"（{search_reason}），换个更全的歌名或歌手试试。"
                 )
 
             _, keys = self.get_models_display_list(api_type=api_type)
@@ -3763,11 +3688,6 @@ class MusicPlugin(Star):
             else:
                 return f"❌ {api_type.upper()} 翻唱时发生错误: {e}"
         finally:
-            if temporary_search_api is not None:
-                try:
-                    await temporary_search_api.close()
-                except Exception as close_error:
-                    logger.debug(f"关闭临时 QQ 音乐客户端失败: {close_error}")
             try:
                 if self.enable_send_file and result_path and os.path.isfile(result_path):
                     await asyncio.sleep(3)
@@ -5178,6 +5098,12 @@ class MusicPlugin(Star):
             logger.error(f"[MatsukoCover] 卸载时保存偏好失败: {e}")
         
         # 清理API session
+        try:
+            if hasattr(self, 'song_router') and self.song_router:
+                await self.song_router.close()
+        except Exception as e:
+            logger.debug(f"[MatsukoCover] 关闭音源路由 session: {e}")
+
         try:
             if hasattr(self, 'netease_fetcher') and self.netease_fetcher:
                 await self.netease_fetcher.close()

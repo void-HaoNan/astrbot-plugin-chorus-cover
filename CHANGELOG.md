@@ -3,6 +3,62 @@
 本文件记录 **astrbot_plugin_chorus_cover**（副歌翻唱 · 自维护分支）的变更。
 上游 `sdfsfsk/matsuko_cover` 的历史日志请见上游仓库，此处只记本分支的差异。
 
+## v0.7.0（2026-10-27）
+
+多音源自动切换 + 别名匹配 + 伴奏排除。起因是一个真实案例：用户说「雨爱司凤版」，
+网易云那首标题只有「雨爱」、歌手 Settle一虾子、「司凤版」在别名字段 `alias` 里；
+旧逻辑只拿标题匹配，选中了「雨爱司凤版伴奏纯享」（纯伴奏），翻唱出来是静音。
+
+### 新增
+
+- **`source_router.py`**：按 `source_order` 依次尝试各平台，每个平台走同一套
+  「搜歌（带别名）→ 严格匹配 → 排除伴奏 → 取播放链接 → 下载 → 80 秒闸门」；
+  前一个平台任何一步没成就换下一个，日志里每个平台一行结果。
+- **别名匹配**：匹配文本从「标题 + 歌手」扩成「标题 + 别名 + 歌手」。网易云搜索结果自带
+  `alias`，没有时再查 `/api/song/detail` 补 `alia` / `tns`；`api.py` 的搜索也带上了别名。
+- **伴奏排除**：候选标题或别名出现 伴奏、纯享、纯音乐、消音、无人声、off vocal、
+  instrumental、inst、karaoke、dj版 的直接淘汰。所有候选都只是伴奏时对外返回「只有伴奏版」。
+- **同分取舍**：同分候选先剔除时长不到最长候选 90% 的（视为片段/剪辑），再按搜索排序取第一条；
+  「失眠飞行」这种几毫秒时长差的同一录音仍按搜索相关性选原唱。
+- **新配置 `source_order`**：默认 `["netease", "kugou", "kuwo", "qqmusic"]`（网易云 → 酷狗 →
+  酷我 → QQ 音乐）。列表同时决定顺序与启停：删掉某项即停用，清空退回默认；中文/别名也认。
+
+### 变更
+
+- `_prepare_song_audio` 改走路由器；原来单网易云的取歌逻辑原样保留成路由器里的第一个源
+  （`netease_fetch.NeteaseFetcher`）。80 秒闸门对所有源生效。
+- 命令选歌、LLM 工具搜歌（`_do_cover`）也改走路由器的搜歌 + 匹配，卡片菜单会显示实际来源和别名。
+- 酷狗：点歌插件的 `gateway.kugou.com/v5/url` 现在常回「本次请求需要验证」，路由器在它失败后
+  改用移动端接口 `m.kugou.com/app/i/getSongInfo.php?cmd=playInfo&hash=…` 取直链再下载。
+- 酷狗/酷我/QQ 音乐的平台类按文件路径动态 import 点歌插件 `astrbot_plugin_music`
+  （合成包名保证它内部的相对 import 正常），cookie/uin 从
+  `data/config/astrbot_plugin_music_config.json` 读；QQ 音乐没配 `uin` 时跳过并记一行日志，
+  绝不抛异常中断整条链路。
+- `disable_netease` / `disable_qqmusic` / `enable_qqmusic` 保留但不再生效（改由 `source_order` 控制），
+  schema 里的说明同步改掉。
+
+### 验证
+
+用 AstrBot 自带 venv（`C:\Users\21903\AppData\Roaming\uv\tools\astrbot\Scripts\python.exe`）
+独立跑真实网络 + 真实下载（不经过 AstrBot，不重启机器人）：
+
+- 「雨爱司凤版」默认顺序 → 网易云命中 **id 3445953575**《雨爱》- Settle一虾子
+  （别名 司凤版），ffprobe **138.45 秒**，5.5 MB；未选中 138.48 秒的「伴奏纯享」。
+- 网易云故意取不到（把 meting 指向死端口 `127.0.0.1:9`）→ 自动切到 **酷狗**，
+  用移动端接口兜底下载成功（《雨爱 (司凤版)》- 音乐山，ffprobe 238.52 秒）。
+- 「失眠飞行」→ 仍选中 **id 1365898499**《失眠飞行》- 接个吻，开一枪、沈以诚、薛明媛，
+  ffprobe 207.16 秒（没回归）。
+- 单元：3 条全带伴奏标记的候选 → `status=only_accompaniment`，原因 `只有伴奏版`。
+- `py_compile` 通过：`main.py` / `source_router.py` / `netease_fetch.py` / `api.py` /
+  `selection.py` / `outbound.py` / `intent_gate.py`；`_conf_schema.json` JSON 校验通过。
+- 未重启 AstrBot（由用户重启）。
+
+### 文件
+
+- 新增：`source_router.py`
+- 修改：`main.py`、`netease_fetch.py`、`api.py`、`_conf_schema.json`、`README.md`、
+  `CHANGELOG.md`、`metadata.yaml`
+
 ## v0.6.0（2026-10-27）
 
 新增「唱多长」配置：副歌片段 / 整首翻唱 / 自定义时长。后端 `chorus-mw` 同步升到 0.7.0，

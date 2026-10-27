@@ -179,6 +179,15 @@ def _first_item(data: Any) -> dict:
     return _as_dict(data)
 
 
+def _alias_text(value: Any) -> str:
+    """把别名（字符串 / 列表）拼成一段可比较文本；没有就返回空串。"""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        return " / ".join(str(item).strip() for item in value if str(item).strip())
+    return ""
+
+
 def _pick_time_ms(payload: Any) -> Optional[int]:
     """读整首时长（毫秒）；读不到返回 None。"""
     meta: dict = {}
@@ -392,9 +401,11 @@ class NeteaseFetcher:
     # ---------- 搜歌 ----------
 
     async def search_songs(self, keyword: str, limit: int = 5) -> list[dict]:
-        """按关键词搜网易云，返回 ``[{id, name, artists, duration}]``。
+        """按关键词搜网易云，返回 ``[{id, name, artists, duration, alias}]``。
 
-        和点歌插件 ``NetEaseMusic.fetch_songs`` 完全同一个接口和参数。
+        和点歌插件 ``NetEaseMusic.fetch_songs`` 完全同一个接口和参数；多带一个
+        ``alias``（搜索结果里的别名字段，例如「雨爱」的「司凤版」），
+        0.7.0 起选歌会把「标题 + 别名 + 歌手」拼起来一起比。
         """
         keyword = str(keyword or "").strip()
         if not keyword:
@@ -431,9 +442,40 @@ class NeteaseFetcher:
                         if isinstance(artist, dict) and artist.get("name")
                     ),
                     "duration": item.get("duration") or item.get("dt"),
+                    "alias": _alias_text(
+                        item.get("alias")
+                        or item.get("alia")
+                        or item.get("tns")
+                        or ""
+                    ),
                 }
             )
         return songs
+
+    async def fetch_song_alias(self, song_id: Any) -> str:
+        """查歌曲详情补别名（搜索没带 alias 时用）。
+
+        详情接口里的别名字段有三种写法：``alias`` / ``alia`` / ``tns``，
+        这里都试一遍；拿不到就返回空串，不影响主流程。
+        """
+        song_id = str(song_id or "").strip()
+        if not song_id.isdigit():
+            return ""
+        payload = await self._request(
+            f"https://music.163.com/api/song/detail?ids=[{song_id}]"
+        )
+        if not isinstance(payload, dict):
+            return ""
+        songs = payload.get("songs")
+        if not isinstance(songs, list) or not songs or not isinstance(songs[0], dict):
+            return ""
+        song = songs[0]
+        parts: list[str] = []
+        for key in ("alias", "alia", "tns"):
+            text = _alias_text(song.get(key))
+            if text and text not in parts:
+                parts.append(text)
+        return " / ".join(parts)
 
     # ---------- 取直链 ----------
 
