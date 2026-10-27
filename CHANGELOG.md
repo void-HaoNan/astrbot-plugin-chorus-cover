@@ -6,6 +6,47 @@
 0.9.0 之前的条目保留发布当时的原文；其中提到的引擎、命令与配置已在 0.9.0 移除，
 现在只剩 RVC 一条链路，以本文件最上方与 `README.md` 为准。
 
+## v0.10.1（2026-10-28）
+
+**清理设置页：只留真正生效的项**。按「schema 的 74 项逐项在 `main.py` 找读取点 →
+再对照中间层 `app.py` 的 `/convert` 形参与 `pipeline.py` 实际消费」审计，
+删掉 17 项历史遗留 / 重复 / 空转配置，剩 57 项。
+
+### 移除（17 项）
+
+- **重复**：`default_model_index`（与 `rvc_default_model` 下拉抢默认模型，一个序号一个名字）。
+  代码固定回落到第 1 个模型；用户偏好里的同名字段改名 `model_index`。
+- **空转**：`filter_radius`（RVC WebUI 本版 `/infer_convert` 没有这个入参，中间层只记日志）、
+  `reverb_intensity`、`delay_intensity`、`vocal_postprocess`
+  （`/convert` 收到后从不传给 `pipeline.run`，混响/EQ/压缩不会发生）。
+- **空转**：`uvr5_agg`、`uvr5_tta`、`uvr5_postprocess`、`uvr5_window_size`、
+  `uvr5_high_end_process`（分离走固定模型，`pipeline` 只认 `config.SEP_MODEL`，不用 UVR5 参数）。
+- **空转**：`msst_default_model`、`msst_batch_size`、`msst_num_overlap`、`msst_normalize`、
+  `msst_use_tta`（`/select_msst_model` 只改 `app._STATE`，`pipeline` 始终用后端
+  `CHORUS_SEP_MODEL`；其余几个连 `convert()` 函数体都不读）。
+  `msst_default_model` 改为代码常量，仅保留给 `/切换msst模型` 的运行时状态。
+- **重复且绕过统一出口**：`enable_progress_bar`、`progress_update_interval`。
+  这套分支在 `_async_predict` 里直接 `event.send` 固定 emoji 进度，和 `notify_progress`
+  两套并存，也违反「回复由模型生成」。删除后进度只走 `outbound.py`（默认静音），
+  超时仍由原有 deadline 逻辑兜住。
+
+### 变更
+
+- `main.py`：删掉上述配置读取与提交参数（不再往 `/convert` 送空转形参）；
+  删除直发进度分支与 `_get_stage_emoji()`；`default_model_index` 相关引用统一改为
+  `FALLBACK_MODEL_INDEX = 1`；偏好字段 `default_model_index` → `model_index`。
+- `/切换msst模型` 的返回文案写清「chorus-mw 0.8.0 分离模型由后端固定，此选择不改变实际分离模型」，
+  不再声称「之后的新翻唱会使用该模型」；也不再往已删除的配置键写值。
+- 版本号 → `0.10.1`，README 配置表同步删项，新增本段说明。
+
+### 验证
+
+- `_conf_schema.json` 74 → 57 项，`json.loads` 通过；`main.py` 用 AstrBot 运行时
+  Python 3.12 `py_compile` 通过。
+- 假 context / 假 event 桩实例化成功；`star_handlers_registry` 中本插件
+  handler 29 个（命令 13 + LLM 工具 14 + 平台/音频事件 2），与改动前一致。
+- 代码里已无被删键的读取（grep 只剩注释与本 CHANGELOG 的历史说明）。
+
 ## v0.10.0（2026-10-27）
 
 **影响翻唱效果的参数补齐并真的传下去**。此前设置页只有 `index_rate` 等少数几项，

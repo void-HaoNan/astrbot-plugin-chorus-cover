@@ -30,6 +30,15 @@ from .intent_gate import cover_refusal, is_music_request, message_text as event_
 
 MODEL_ALIAS_SEPARATOR = "|||"
 
+# 0.10.1：设置页删掉了一批历史遗留 / 重复 / 空转项，代码里保留固定默认值，
+# 免得删键之后 .get 取不到值时行为漂移，也避免 KeyError。
+# - default_model_index：与 rvc_default_model 下拉重复（一个序号一个名字），
+#   统一回落到模型列表第 1 个；用户偏好里的字段也改名为 model_index。
+FALLBACK_MODEL_INDEX = 1
+# - msst_default_model：当前 chorus-mw 的分离模型由后端启动配置固定，
+#   这个值只作为 /切换msst模型 的运行时状态，不再从设置页读。
+MSST_DEFAULT_MODEL = "bs_roformer_ep_317_sdr_12.9755"
+
 
 def _bounded_float(config: Any, key: str, default: float, low: float, high: float) -> float:
     """读一个浮点配置并夹到 [low, high]。
@@ -82,7 +91,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.10.0",
+    "0.10.1",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -183,8 +192,6 @@ class MusicPlugin(Star):
         self.enable_batch_cover = config.get("enable_batch_cover", True)
         self.enable_preference_learning = config.get("enable_preference_learning", True)
         
-        self.enable_progress_bar = config.get("enable_progress_bar", True)
-        self.progress_update_interval = config.get("progress_update_interval", 3)
         self.enable_llm_success_notify = config.get("enable_llm_success_notify", True)
         self.enable_send_file = config.get("enable_send_file", False)
         self.enable_config_report = config.get("enable_config_report", True)
@@ -194,13 +201,13 @@ class MusicPlugin(Star):
         self.enable_task_tracking = config.get("enable_task_tracking", True)
         self.task_timeout_seconds = config.get("task_timeout_seconds", 9000)
         
-        self.default_model_index = config.get("default_model_index", 1)
-        # 插件设置里下拉选的默认 RVC 音色（空串表示不指定，沿用 default_model_index）
+        # 0.10.1：默认模型序号设置项已删除（与 rvc_default_model 下拉重复），固定第 1 个兜底
+        self.fallback_model_index = FALLBACK_MODEL_INDEX
+        # 插件设置里下拉选的默认 RVC 音色（空串表示不指定，回落到第 1 个模型）
         self.rvc_default_model = str(config.get("rvc_default_model", "") or "").strip()
         self.default_key_shift = config.get("default_key_shift", 0)
         self.f0_method = config.get("f0_method", "rmvpe")
         self.index_rate = _bounded_float(config, "index_rate", 0.75, 0.0, 1.0)
-        self.filter_radius = config.get("filter_radius", 3)
         # === 0.8.0 中间层真正会用的采样/混音参数 ===
         # 中间层 0.8.0 起把这些值按名字传进 RVC（index_rate/rms_mix_rate/protect/f0）
         # 和混音（inst_volume_db/vocal_volume_db）；老后端会在提交前按参数表探测、缺了就不传。
@@ -208,10 +215,7 @@ class MusicPlugin(Star):
         self.protect = _bounded_float(config, "protect", 0.33, 0.0, 0.5)
         self.inst_volume_db = _bounded_float(config, "inst_volume_db", -6.0, -20.0, 0.0)
         self.vocal_volume_db = _bounded_float(config, "vocal_volume_db", 0.0, -12.0, 12.0)
-        self.reverb_intensity = config.get("reverb_intensity", 4)
-        self.delay_intensity = config.get("delay_intensity", 0)
         self.shift_accompaniment = config.get("shift_accompaniment", True)
-        self.vocal_postprocess = bool(config.get("vocal_postprocess", False))
 
         # === 0.6.0 翻唱时长（只对 chorus-mw 这类支持 render_mode 的后端生效）===
         raw_render_mode = str(config.get("render_mode", "chorus") or "chorus").strip().lower()
@@ -227,24 +231,11 @@ class MusicPlugin(Star):
         self.chorus_seconds = max(20, min(180, seconds))
 
         
-        # === MSST 分离参数（只有声明了 MSST 接口的 RVC 中间层才会用到）===
-        # Follow the native recommendation of model_bs_roformer_ep_317_sdr_12.9755.
-        # Batch size changes throughput/VRAM, while overlap materially affects
-        # separation smoothness.  TTA is optional because it triples inference.
-        self.msst_batch_size = config.get("msst_batch_size", 1)
-        self.msst_num_overlap = config.get("msst_num_overlap", 4)
-        self.msst_normalize = config.get("msst_normalize", False)
-        self.msst_use_tta = config.get("msst_use_tta", False)
-        self.msst_default_model = config.get(
-            "msst_default_model", "bs_roformer_ep_317_sdr_12.9755"
-        )
-        
-        # === UVR5 分离参数（只有某些 RVC 中间层会用到）===
-        self.uvr5_agg = config.get("uvr5_agg", 10)
-        self.uvr5_tta = config.get("uvr5_tta", False)
-        self.uvr5_postprocess = config.get("uvr5_postprocess", False)
-        self.uvr5_window_size = config.get("uvr5_window_size", 512)
-        self.uvr5_high_end_process = config.get("uvr5_high_end_process", "mirroring")
+        # 0.10.1：MSST 批大小/重叠/归一化/TTA 与整组 UVR5 参数已从设置页删除。
+        # 它们只是 /convert 的形参占位：chorus-mw 收到后不传给 pipeline，
+        # 分离模型固定用后端 config.SEP_MODEL，改了也不影响成品。
+        # 这里只留 /切换msst模型 需要的运行时状态（不再从设置页读）。
+        self.msst_default_model = MSST_DEFAULT_MODEL
         
         self.max_batch_size = config.get("max_batch_size", 5)
         self.preference_storage_path = config.get("preference_storage_path", "data/user_preferences.json")
@@ -1123,7 +1114,7 @@ class MusicPlugin(Star):
         """获取用户偏好，如果不存在则创建默认值"""
         if user_id not in self.user_preferences:
             self.user_preferences[user_id] = {
-                "default_model_index": max(1, self.default_model_index),
+                "model_index": FALLBACK_MODEL_INDEX,
                 "default_key_shift": self.default_key_shift,
                 "favorite_songs": [],
                 "usage_count": 0,
@@ -1137,20 +1128,11 @@ class MusicPlugin(Star):
             pref["preferred_artists"] = {a: {"count": 1, "last_time": None, "model": None} for a in old_list}
         if "artist_model_map" not in pref:
             pref["artist_model_map"] = {}
-        if pref.get("default_model_index", 0) < 1:
-            pref["default_model_index"] = max(1, self.default_model_index)
+        if pref.get("model_index", 0) < 1:
+            pref["model_index"] = FALLBACK_MODEL_INDEX
         return pref
 
     async def _async_predict(self, client, *args, timeout=300, event=None, detect_cache_hit=False, **kwargs):
-        logger.debug(f"[UVR5 Debug] 传参: uvr5_agg={kwargs.get('uvr5_agg')}, uvr5_tta={kwargs.get('uvr5_tta')}, uvr5_postprocess={kwargs.get('uvr5_postprocess')}, uvr5_window_size={kwargs.get('uvr5_window_size')}, uvr5_high_end_process={kwargs.get('uvr5_high_end_process')}")
-        logger.info(
-            "[MSST分离参数Debug] 插件提交参数: "
-            f"model={kwargs.get('msst_model', 'backend-default')} | "
-            f"batch={kwargs.get('msst_batch_size', 'backend-default')} | "
-            f"overlap={kwargs.get('msst_num_overlap', 'backend-default')} | "
-            f"normalize={kwargs.get('msst_normalize', 'backend-default')} | "
-            f"tta={kwargs.get('msst_use_tta', 'backend-default')}"
-        )
         loop = asyncio.get_running_loop()
         job = await asyncio.to_thread(client.submit, *args, **kwargs)
         self._bind_active_gradio_job(event, job)
@@ -1177,58 +1159,12 @@ class MusicPlugin(Star):
             raise TimeoutError(message) from cause
         
         cache_hit_detected = False
-        
-        if self.enable_progress_bar and event:
-            import re as _re
-            last_msg_time = 0
-            last_desc = ""
-            while not job.done():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    # Avoid timing out a job that completed between done() and
-                    # the monotonic deadline check.
-                    if job.done():
-                        break
-                    raise_inference_timeout()
-                try:
-                    status = job.status()
-                    if hasattr(status, 'progress_data') and status.progress_data:
-                        progress_data = status.progress_data[-1]
-                        desc = getattr(progress_data, 'desc', None)
-                        if desc is None and isinstance(progress_data, dict):
-                            desc = progress_data.get('desc')
-                        pct = None
-                        if hasattr(progress_data, 'progress'):
-                            try:
-                                pct = float(progress_data.progress)
-                            except (TypeError, ValueError):
-                                pass
-                        elif isinstance(progress_data, dict):
-                            try:
-                                pct = float(progress_data.get('progress', 0))
-                            except (TypeError, ValueError):
-                                pass
-                        
-                        # 检测缓存命中
-                        if desc and ('cache hit' in desc.lower() or '缓存命中' in desc):
-                            cache_hit_detected = True
-                        
-                        current_time = time.time()
-                        if desc and desc != last_desc:
-                            if current_time - last_msg_time >= self.progress_update_interval or last_msg_time == 0:
-                                has_sub_pct = bool(_re.search(r'\d+%', desc))
-                                if has_sub_pct:
-                                    msg = f"{self._get_stage_emoji(desc)} {desc}"
-                                else:
-                                    overall_pct = f" [{int(pct * 100)}%]" if pct is not None else ""
-                                    msg = f"{self._get_stage_emoji(desc)} {desc}{overall_pct}"
-                                self._create_tracked_task(event.send(event.plain_result(msg)))
-                                last_msg_time = current_time
-                                last_desc = desc
-                except Exception as e:
-                    logger.debug(f"获取进度信息时出错: {e}")
-                await asyncio.sleep(min(1.0, max(0.0, remaining)))
-                
+
+        # 0.10.1：原先这里有一套「直接发 QQ 进度条」的分支（enable_progress_bar /
+        # progress_update_interval），它绕过 outbound 统一出口、发固定 emoji 文案，
+        # 与 notify_progress 重复。设置页已删除这两个开关，这里也一并去掉：
+        # 进度只走 outbound（默认静音），超时由下面的 deadline 逻辑兜住。
+
         remaining = deadline - time.monotonic()
         if remaining <= 0 and not job.done():
             raise_inference_timeout()
@@ -1293,21 +1229,12 @@ class MusicPlugin(Star):
                 "vocal_vol": 0,
                 "inst_vol": 0,
                 "model_dropdown": model_name,
-                "reverb_intensity": self.reverb_intensity,
-                "delay_intensity": self.delay_intensity,
-                "uvr5_agg": self.uvr5_agg,
-                "uvr5_tta": self.uvr5_tta,
-                "uvr5_postprocess": self.uvr5_postprocess,
-                "uvr5_window_size": self.uvr5_window_size,
-                "uvr5_high_end_process": self.uvr5_high_end_process,
-                "msst_batch_size": self.msst_batch_size,
-                "msst_num_overlap": self.msst_num_overlap,
-                "msst_normalize": self.msst_normalize,
-                "vocal_postprocess": self.vocal_postprocess,
                 "shift_accompaniment": self.shift_accompaniment,
                 "f0_method": self.f0_method,
                 "index_rate": self.index_rate,
-                "filter_radius": self.filter_radius,
+                # 0.10.1：reverb_intensity / delay_intensity / vocal_postprocess /
+                # filter_radius / uvr5_* / msst_batch_size 等已从设置页删除，
+                # 它们只是 /convert 的形参占位，中间层不消费，不再提交。
                 **mix_kwargs,
                 **msst_kwargs,
                 **render_kwargs,
@@ -1321,24 +1248,6 @@ class MusicPlugin(Star):
                 detect_cache_hit=True,
             )
             return result, cache_hit
-    def _get_stage_emoji(self, desc: str) -> str:
-        if not desc:
-            return "⏳"
-        desc_lower = desc.lower()
-        if any(kw in desc_lower for kw in ["下载", "download"]):
-            return "📥"
-        elif any(kw in desc_lower for kw in ["分离", "separat", "人声", "vocal", "msst", "bs-roformer", "uvr"]):
-            return "🎤"
-        elif any(kw in desc_lower for kw in ["推理", "infer", "rvc", "模型"]):
-            return "🧠"
-        elif any(kw in desc_lower for kw in ["混音", "mix", "处理音频", "混响", "reverb", "均衡", "伴奏"]):
-            return "🎛️"
-        elif any(kw in desc_lower for kw in ["导出", "export", "完成"]):
-            return "✅"
-        elif any(kw in desc_lower for kw in ["准备", "加载", "load", "缓存"]):
-            return "⚙️"
-        else:
-            return "⏳"
 
     # ==================== 方案A+B：上下文注入 + 任务追踪辅助方法 ====================
 
@@ -1585,7 +1494,7 @@ class MusicPlugin(Star):
 
         只在调用方确认「用户没有显式指定模型名或序号」之后调用。
         下拉选的模型不在当前列表里（还没 /刷新rvc模型、模型被删了）时返回 None，
-        调用方回落到 default_model_index / 偏好序号；这里只记一条 warning。
+        调用方回落到第 1 个模型 / 偏好序号；这里只记一条 warning。
         """
         configured = str(getattr(self, "rvc_default_model", "") or "").strip()
         if not configured:
@@ -1596,7 +1505,7 @@ class MusicPlugin(Star):
                 return model["index"]
         logger.warning(
             f"rvc_default_model={configured} 不在当前 RVC 模型列表里，"
-            f"回落到 default_model_index={self.default_model_index}；"
+            f"回落到第 {FALLBACK_MODEL_INDEX} 个模型；"
             "可以用 /刷新rvc模型 重新获取模型列表"
         )
         return None
@@ -2052,20 +1961,14 @@ class MusicPlugin(Star):
         """Only send the new parameter to an MSST-capable backend."""
         supports = self._client_supports_api(client, "/show_msst_models")
         if supports is True:
-            return {
-                "msst_model": self.msst_default_model,
-                "msst_use_tta": self.msst_use_tta,
-            }
+            return {"msst_model": self.msst_default_model}
         if supports is False:
             logger.info(f"后端 {base_url} 没有 MSST 模型接口，本次不提交 MSST 参数")
             return {}
 
         try:
             await self._get_msst_models_from_client(client)
-            return {
-                "msst_model": self.msst_default_model,
-                "msst_use_tta": self.msst_use_tta,
-            }
+            return {"msst_model": self.msst_default_model}
         except Exception:
             logger.info(f"后端 {base_url} 无法确认 MSST 能力，省略 msst_model 参数")
             return {}
@@ -2260,16 +2163,15 @@ class MusicPlugin(Star):
             return
 
         self.msst_default_model = selected["id"]
-        self.config["msst_default_model"] = self.msst_default_model
-        self.config.save_config()
         synced_backend = await self._sync_msst_model_selection(self.msst_default_model)
         sync_text = f"\n中间层确认：{synced_backend}" if synced_backend else ""
         await self.selection_ui.send_card(
             event,
             "✅ MSST 模型设置",
-            f"✅ MSST 默认模型已切换为：{selected['name']}\n"
+            f"✅ 已通知中间层切换分离模型：{selected['name']}\n"
             f"模型 ID：{selected['id']}\n"
-            "之后的新翻唱任务会使用该模型；已有缓存会按模型分别保存。" + sync_text,
+            "注意：chorus-mw 0.8.0 的分离模型由后端启动配置固定，"
+            "这个选择只在声明支持 msst_model 参数的中间层上生效。" + sync_text,
         )
 
     @filter.command("刷新rvc模型")
@@ -3113,7 +3015,7 @@ class MusicPlugin(Star):
                     available = await self.get_available_models(event)
                     return f"❌ 未找到匹配的模型: '{model_name}'\n\n可用的模型：\n{available}\n\n💡 提示：可以使用 get_available_models 查看完整列表"
             else:
-                actual_model_index = model_index or self.default_model_index
+                actual_model_index = model_index or self.fallback_model_index
 
             actual_key_shift = (
                 key_shift if key_shift is not None else self.default_key_shift
@@ -3123,8 +3025,8 @@ class MusicPlugin(Star):
                 user_id = self._get_user_id(event)
                 pref = self._get_user_pref(user_id)
 
-                if not model_name and not model_index and pref.get("default_model_index"):
-                    actual_model_index = pref["default_model_index"]
+                if not model_name and not model_index and pref.get("model_index"):
+                    actual_model_index = pref["model_index"]
 
                 if key_shift is None:
                     actual_key_shift = pref.get("default_key_shift", self.default_key_shift)
@@ -3367,7 +3269,7 @@ class MusicPlugin(Star):
                 return f"批量翻唱数量超过限制（最大{self.max_batch_size}首）。当前提供了{len(songs)}首，请分批处理。"
 
             # === 参数解析 ===
-            actual_model_index = model_index or self.default_model_index
+            actual_model_index = model_index or self.fallback_model_index
             actual_key_shift = (
                 key_shift if key_shift is not None else self.default_key_shift
             )
@@ -3376,7 +3278,7 @@ class MusicPlugin(Star):
                 user_id = self._get_user_id(event)
                 pref = self._get_user_pref(user_id)
                 if not model_index:
-                    actual_model_index = pref.get("default_model_index", actual_model_index)
+                    actual_model_index = pref.get("model_index", actual_model_index)
                 if key_shift is None:
                     actual_key_shift = pref.get("default_key_shift", actual_key_shift)
 
@@ -3631,12 +3533,12 @@ class MusicPlugin(Star):
             
             if usage_count == 0:
                 recommendation.append(f"\n💡 您还没有使用过翻唱功能，将使用系统默认配置：")
-                recommendation.append(f"   - 模型: 第{self.default_model_index}个")
+                recommendation.append(f"   - 模型: 第{self.fallback_model_index}个")
                 recommendation.append(f"   - 音调: {self.default_key_shift:+d}")
                 return "\n".join(recommendation)
 
             # === 推荐配置 ===
-            rec_model_index = pref.get("default_model_index", self.default_model_index)
+            rec_model_index = pref.get("model_index", self.fallback_model_index)
             rec_key_shift = pref.get("default_key_shift", self.default_key_shift)
             last_model = pref.get("last_used_model", "未知")
             
@@ -3737,7 +3639,7 @@ class MusicPlugin(Star):
             
             # === 当前偏好 ===
             stats.append(f"\n⚙️ 当前偏好设置：")
-            stats.append(f"   默认模型: 第{pref.get('default_model_index', '未设置')}个")
+            stats.append(f"   默认模型: 第{pref.get('model_index', '未设置')}个")
             stats.append(f"   默认音调: {pref.get('default_key_shift', '未设置'):+d}" if isinstance(pref.get('default_key_shift'), int) else "   默认音调: 未设置")
             
             # === 上次使用 ===

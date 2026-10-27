@@ -134,16 +134,10 @@
     "hint": "记录用户常用的模型、音调偏好等，下次翻唱时能推荐最合适配置。数据保存在 data 目录下。",
     "default": true
   },
-  "default_model_index": {
-    "description": "默认模型序号",
-    "type": "int",
-    "hint": "当用户未指定时使用的默认模型序号（从1开始）",
-    "default": 1
-  },
   "rvc_default_model": {
     "description": "选择音色模型（RVC 默认音色）",
     "type": "string",
-    "hint": "优先使用这里选中的模型文件；留空则沿用 default_model_index 的序号逻辑。仅对 RVC 生效，模型需先通过 /刷新rvc模型 出现在列表里；选了但列表里找不到同名模型时会回落到序号逻辑，并在日志里记一条警告。",
+    "hint": "优先使用这里选中的模型文件；留空则用模型列表里的第 1 个。仅对 RVC 生效，模型需先通过 /刷新rvc模型 出现在列表里；选了但列表里找不到同名模型时会回落到第 1 个，并在日志里记一条警告。",
     "options": [
       "Yuuka.pth",
       "ainuo.pth",
@@ -174,12 +168,6 @@
     "hint": "用户偏好数据的存储文件路径（JSON格式）",
     "default": "data/user_preferences.json"
   },
-  "enable_progress_bar": {
-    "description": "开启渲染和分离进度条输出到QQ聊天窗口",
-    "type": "bool",
-    "hint": "开启后，模型分离人声和渲染合成的进度会实时发送到聊天窗口",
-    "default": true
-  },
   "enable_llm_success_notify": {
     "description": "处理完成后通知大语言模型 (LLM)",
     "type": "bool",
@@ -198,12 +186,6 @@
     "hint": "关闭时遇到风控/取链接失败自动重试不打扰用户（默认关闭）。打开后同样由人格模型说一句",
     "default": false
   },
-  "progress_update_interval": {
-    "description": "进度条刷屏频率（秒）",
-    "type": "int",
-    "hint": "每次发送进度条消息的间隔时间，单位为秒。建议设置在2-5秒之间以防刷屏",
-    "default": 3
-  },
   "f0_method": {
     "description": "RVC音高提取算法（F0方法）",
     "type": "string",
@@ -215,12 +197,6 @@
     "type": "string",
     "hint": "控制RVC推理时特征检索（Index）的权重。范围0~1，默认0.75。值越高越接近原模型音色但可能生硬，值越低模型自由发挥更多但可能偏离音色。电音人声沙哑时可尝试降低到0.5。",
     "default": "0.75"
-  },
-  "filter_radius": {
-    "description": "RVC F0滤波半径（Filter Radius）",
-    "type": "int",
-    "hint": "对提取的音高（F0）进行中值滤波的半径。范围0~10，默认3。值越大F0越平滑（减少跑调抖动），但可能丢失音高细节。电音人声沙哑时可尝试调高到5。注意：chorus-mw 0.8.0 目前只把这个值记进日志，RVC WebUI 那一版没有对应入参，暂不生效。",
-    "default": 3
   },
   "rms_mix_rate": {
     "description": "人声音量起伏贴合原唱的程度（rms_mix_rate）",
@@ -253,78 +229,6 @@
     "default": 0.0,
     "minimum": -12,
     "maximum": 12
-  },
-  "reverb_intensity": {
-    "description": "RVC 混响强度 (Reverb)",
-    "type": "int",
-    "hint": "为生成的音频添加混响效果的强度。范围0~10，0为干声无混响，4为默认值，10为宏大混响（类似演唱会效果）。",
-    "default": 4
-  },
-  "delay_intensity": {
-    "description": "RVC 回声/延迟强度 (Delay)",
-    "type": "int",
-    "hint": "为生成的音频添加回声效果的强度，自动同步歌曲BPM。范围0~10，0为关闭回声，数值越大回声越明显。建议与混响搭配使用。",
-    "default": 0
-  },
-  "msst_default_model": {
-    "description": "MSST 默认人声分离模型",
-    "type": "string",
-    "hint": "【只有声明了 MSST 接口的 RVC 中间层会用到】默认使用的分离模型 ID。用 /列出msst模型 查看列表、/切换msst模型 修改；没有该接口的中间层会自动忽略。",
-    "default": "bs_roformer_ep_317_sdr_12.9755"
-  },
-  "msst_batch_size": {
-    "description": "MSST 批处理大小 (Batch Size)",
-    "type": "int",
-    "hint": "【只有声明了 MSST 接口的 RVC 中间层会用到】控制分离时的显存占用与吞吐。model_bs_roformer_ep_317_sdr_12.9755 原生推荐 1；调大主要提升速度，不直接提升音质。",
-    "default": 1
-  },
-  "msst_num_overlap": {
-    "description": "MSST 重叠次数 (Num Overlap)",
-    "type": "int",
-    "hint": "【只有声明了 MSST 接口的 RVC 中间层会用到】控制分离的平滑度，默认 4。值越大边缘越平滑但速度成倍下降。",
-    "default": 4
-  },
-  "msst_normalize": {
-    "description": "MSST 音频归一化 (Normalize)",
-    "type": "bool",
-    "hint": "【只有声明了 MSST 接口的 RVC 中间层会用到】分离前标准化音量，默认关闭以保持训练时的幅度分布。",
-    "default": false
-  },
-  "msst_use_tta": {
-    "description": "MSST 测试时增强 (TTA)",
-    "type": "bool",
-    "hint": "【只有声明了 MSST 接口的 RVC 中间层会用到】对原始/左右声道交换/反相音频分别推理后取平均，可能减少泄漏，但耗时约为 3 倍。",
-    "default": false
-  },
-  "uvr5_agg": {
-    "description": "UVR5 人声分离聚合度",
-    "type": "int",
-    "hint": "【只有部分 RVC 中间层会用到】UVR5 人声分离的激进程度，范围 0~20。值越大提取越完整但可能混入伴奏，默认 10；其它中间层会忽略此项。",
-    "default": 10
-  },
-  "uvr5_tta": {
-    "description": "UVR5 测试时增强 (TTA)",
-    "type": "bool",
-    "hint": "【只有部分 RVC 中间层会用到】开启后对音频做多次翻转推理再取平均，提升分离质量但速度慢约一倍，默认关闭；其它中间层会忽略此项。",
-    "default": false
-  },
-  "uvr5_postprocess": {
-    "description": "UVR5 后处理",
-    "type": "bool",
-    "hint": "【只有部分 RVC 中间层会用到】开启后检测并去除人声频谱中的静音区域，减少伴奏泄漏，默认关闭；其它中间层会忽略此项。",
-    "default": false
-  },
-  "uvr5_window_size": {
-    "description": "UVR5 窗口大小",
-    "type": "int",
-    "hint": "【只有部分 RVC 中间层会用到】STFT 窗口大小，可选 256/512/1024，默认 512；其它中间层会忽略此项。",
-    "default": 512
-  },
-  "uvr5_high_end_process": {
-    "description": "UVR5 高频处理方式",
-    "type": "string",
-    "hint": "【只有部分 RVC 中间层会用到】处理高频段覆盖不足的方式：mirroring（推荐）或 none，默认 mirroring；其它中间层会忽略此项。",
-    "default": "mirroring"
   },
   "enable_send_file": {
     "description": "推理完成后同时以文件形式发送到群聊",
@@ -399,12 +303,6 @@
     "type": "bool",
     "hint": "开启后，设置升降调时伴奏会同步调整以匹配人声。关闭则只调整人声音高，伴奏保持原调。适合想单独听人声变化效果时使用。默认开启。",
     "default": true
-  },
-  "vocal_postprocess": {
-    "description": "启用旧版人声后处理（EQ/压缩/混响）",
-    "type": "bool",
-    "hint": "默认关闭以保留 RVC 原始音质。开启后才应用 80Hz 高通、16kHz 低通、EQ、压缩、延迟和混响；混响与延迟强度仍由原配置控制。只有支持该参数的 RVC 中间层才会生效。",
-    "default": false
   },
   "render_mode": {
     "description": "翻唱时长模式（唱多长）",

@@ -4,7 +4,7 @@
 
 本项目的取歌与下载逻辑借用了 [astrbot_plugin_music](https://github.com/Zhalslar/astrbot_plugin_music) 的实现思路。
 
-- 版本：`0.10.0`
+- 版本：`0.10.1`
 - 作者：void-HaoNan
 - 仓库：<https://github.com/void-HaoNan/astrbot-plugin-chorus-cover>
 - 许可：AGPL-3.0（见文末「许可与出处」）
@@ -43,7 +43,7 @@
 - **批量翻唱**：一次多首，逐首发送 + 最后给汇总报告。
 - **任务与统计**：`/查看翻唱任务`、`/取消翻唱任务`、`/我的翻唱统计`；LLM 侧有 `get_task_status` / `cancel_cover_task` / `view_my_stats`。
 - **自动升降调**（可选）：识别原曲歌手与模型的性别，男→女升调、女→男降调，人声与伴奏一起移调。
-- **统一出口**：`outbound.py` 负责插件自己那几条提示——进度、重试默认静音，失败只发一句人话，技术细节只写日志。后端推理进度是另一套，由 `enable_progress_bar` 单独控制。
+- **统一出口**：`outbound.py` 是插件唯一的对话出口——进度、重试默认静音，失败只发一句人话，技术细节只写日志。0.10.1 起不再有绕过出口、直接往群里发固定进度文案的分支。
 - **缓存管理**：`/查看翻唱缓存`、`/清理翻唱缓存`（管理员）。
 - **点歌 / 翻唱分开判定**：所有翻唱入口先过 `intent_gate.py` 的统一闸门，点歌类消息不会被翻唱接走。
 
@@ -74,7 +74,7 @@
 | `inst_volume_db` | `-6` | -20~0 | 调大（往 0）伴奏更响、现场感强；调小（往 -20）伴奏更弱、几乎只剩人声 | -6；人声被盖住就 -10 |
 | `vocal_volume_db` | `0` | -12~+12 | 调大人声更靠前更抢耳；调小人声往后退、像混在伴奏里 | 0；人声太尖 -3，太弱 +3 |
 
-`filter_radius` 也在设置里，但中间层 0.8.0 只把它记进日志（RVC WebUI 那一版没有对应入参），暂时不会改变成品——设置页写清楚了，别指望它调音。
+设置页只保留真正能改变成品或流程的项。`filter_radius`、混响/延迟强度、人声后处理、整组 `uvr5_*` 与 `msst_*` 已在 0.10.1 删除——chorus-mw 0.8.0 的 `/convert` 收下这些形参后并不消费，留着只会让人以为能调。分离模型由后端启动配置（`CHORUS_SEP_MODEL`）决定，插件设置页不再提供这个假开关。
 
 ## 环境与安装
 
@@ -92,7 +92,7 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 
 1. 打开插件配置，把 `rvc_base_url` 填成你的 RVC 后端地址（默认 `http://127.0.0.1:3333/`）。
 2. 发 `/刷新rvc模型`，确认能读到模型列表。
-3. 想指定默认音色就选 `rvc_default_model`（下拉里是模型文件名），不选就按 `default_model_index` 取序号。
+3. 想指定默认音色就选 `rvc_default_model`（下拉里是模型文件名），不选就用模型列表第 1 个。
 
 可选：想让酷狗/酷我/QQ 音乐参与取歌，装上点歌插件 `astrbot_plugin_music` 并配好对应平台；不装也能用，只是这三源会被跳过、只走网易云。
 
@@ -111,7 +111,7 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 
 本仓库配套的中间层是 `chorus-mw`：它自己拉起 RVC 整合包、切副歌、分离、移调、混音，插件只要给它一个音频路径。
 
-> 注意：哪些参数真正生效由后端决定。`chorus-mw` **0.8.0 起**会真的使用 `f0_method`、`index_rate`、`rms_mix_rate`、`protect`、`inst_volume_db`、`vocal_volume_db`（传进 RVC 推理和混音），日志里每次请求打一行 `params ...` 可核对；`filter_radius` 只记日志、暂不生效。老后端仍是「后端支持就生效」。
+> 注意：哪些参数真正生效由后端决定。`chorus-mw` **0.8.0 起**会真的使用 `f0_method`、`index_rate`、`rms_mix_rate`、`protect`、`inst_volume_db`、`vocal_volume_db`（传进 RVC 推理和混音），日志里每次请求打一行 `params ...` 可核对；`filter_radius`、混响/延迟、UVR5、MSST 那几组虽然还在 `/convert` 形参里，但中间层不消费，0.10.1 已从设置页删除。
 
 ## 命令表
 
@@ -163,8 +163,7 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 | `rvc_base_url` | `http://127.0.0.1:3333/` | RVC 后端（Gradio）地址，必须以 `/` 结尾 |
 | `enable_rvc` | `true` | 总开关；关掉后 `/rvc`、各工具、本地音频入口都会提示已关闭 |
 | `rvc_models_keywords` | `[]` | 模型列表（`文件名\|\|\|别名`），由 `/刷新rvc模型` 自动写入 |
-| `rvc_default_model` | 空 | 下拉选默认音色；留空按 `default_model_index` 取序号 |
-| `default_model_index` | `1` | 默认模型序号 |
+| `rvc_default_model` | 空 | 下拉选默认音色；留空用模型列表第 1 个 |
 | `timeout` | `30` | 等用户选歌/选音色的超时（秒） |
 | `inference_timeout` | `300` | 单次推理超时（秒）；整首模式建议调大 |
 | `music_api_timeout` | `20` | 搜歌接口超时（秒） |
@@ -190,30 +189,11 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 | `chorus_seconds` | `45` | `custom` 模式的时长，20~180 秒 |
 | `f0_method` | `rmvpe` | RVC 音高提取算法（`rmvpe` / `pm` / `crepe` / `harvest`） |
 | `index_rate` | `0.75` | 特征检索比率 0~1，越高越贴模型音色 |
-| `filter_radius` | `3` | F0 中值滤波半径 0~10；中间层 0.8.0 只记日志、暂不生效 |
 | `rms_mix_rate` | `0.35` | 0~1，越高越贴原唱的音量包络 |
 | `protect` | `0.33` | 0~0.5，越大越保护清音/气声，越不容易撕裂 |
 | `inst_volume_db` | `-6` | -20~0，伴奏音量（dB，负数是压小） |
 | `vocal_volume_db` | `0` | -12~+12，人声音量（dB，0 为原样） |
-| `reverb_intensity` | `4` | 混响强度 0~10 |
-| `delay_intensity` | `0` | 回声/延迟强度 0~10 |
 | `shift_accompaniment` | `true` | 升降调时伴奏跟着一起移调 |
-| `vocal_postprocess` | `false` | 旧版人声后处理（EQ/压缩/混响），只有支持的后端才生效 |
-
-### 人声分离
-
-| 配置项 | 默认 | 说明 |
-|---|---|---|
-| `msst_default_model` | `bs_roformer_ep_317_sdr_12.9755` | MSST 分离模型 ID（`/列出msst模型` 看列表） |
-| `msst_batch_size` | `1` | 分离批大小，影响显存与速度 |
-| `msst_num_overlap` | `4` | 重叠次数，越大越平滑越慢 |
-| `msst_normalize` | `false` | 分离前标准化音量 |
-| `msst_use_tta` | `false` | 测试时增强，耗时约 3 倍 |
-| `uvr5_agg` | `10` | UVR5 分离聚合度 0~20 |
-| `uvr5_tta` | `false` | UVR5 测试时增强 |
-| `uvr5_postprocess` | `false` | UVR5 后处理 |
-| `uvr5_window_size` | `512` | UVR5 STFT 窗口（256 / 512 / 1024） |
-| `uvr5_high_end_process` | `mirroring` | UVR5 高频处理（`mirroring` / `none`） |
 
 ### 自动升降调
 
@@ -232,10 +212,8 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 
 | 配置项 | 默认 | 说明 |
 |---|---|---|
-| `notify_progress` | `false` | 发进度提示到群里（默认静音） |
+| `notify_progress` | `false` | 发进度提示到群里（默认静音，走统一出口） |
 | `notify_retry` | `false` | 发重试提示到群里（默认静音） |
-| `enable_progress_bar` | `true` | 把后端推理进度（带阶段图标的那几条）直接发到群里；关掉就只剩起止消息。与 `notify_progress` 是两套：后者管插件自己「正在取歌 / 已提交」那几条 |
-| `progress_update_interval` | `3` | 进度刷新最小间隔（秒） |
 | `enable_config_report` | `true` | 完成后回一条「本次配置」 |
 | `enable_send_file` | `false` | 除了音频再以文件形式发一份 |
 | `enable_llm_success_notify` | `true` | 完成后让 LLM 说一句 |
@@ -325,13 +303,13 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 保持 `shift_accompaniment=true`。插件会把同样的半音数同时给人声和伴奏，两者时长一致才对得齐。
 
 **Q：换了模型但没生效？**
-优先级：用户明确指定的模型名/序号 > `rvc_default_model` > 用户偏好 / `default_model_index`。下拉里选的模型如果不在当前列表（没刷新、模型被删），会回落到序号逻辑并在日志里记一条 warning。
+优先级：用户明确指定的模型名/序号 > `rvc_default_model` > 用户偏好。下拉里选的模型如果不在当前列表（没刷新、模型被删），会回落到第 1 个并在日志里记一条 warning。
 
 **Q：`/列出msst模型` 报错？**
-说明后端没提供 `/show_msst_models`。这功能是可选的，不影响翻唱。
+说明后端没提供 `/show_msst_models`。这功能是可选的，不影响翻唱。另外 chorus-mw 0.8.0 的分离模型由后端启动配置（`CHORUS_SEP_MODEL`）固定，`/切换msst模型` 不会改变实际分离模型；设置页因此不再提供 MSST 参数。
 
 **Q：进度一条都看不到？**
-默认就是静音的（`notify_progress=false`）。要看得把它打开，或者看日志。
+默认就是静音的（`notify_progress=false`）。要看得把它打开，或者看日志。0.10.1 起后端进度条那条直发通道已删除。
 
 **Q：想完全不让用户用命令？**
 打开 `llm_force_mode`，只能通过对话触发；也可以直接关 `enable_rvc`。
@@ -343,6 +321,7 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 
 只记最近几条，完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
+- **v0.10.1**：清理设置页——删除 17 个历史遗留/重复/空转项（`default_model_index`、`filter_radius`、混响/延迟/人声后处理、`uvr5_*`、`msst_*`、进度条两个开关），删掉的项在中间层本来就不生效。
 - **v0.10.0**：设置页补齐 `rms_mix_rate` / `protect` / `inst_volume_db` / `vocal_volume_db` 并按名字传给 `/convert`；配合 chorus-mw 0.8.0，`index_rate` 等推理参数与两条轨道的音量真正生效（不再写死）。
 - **v0.9.0**：收窄为纯 RVC 插件，移除另外两套语音转换引擎与旧 QQ 音乐相关命令和配置，设置页只留生效项。
 - **v0.8.0**：选歌判定改成确定规则（整串当歌名、歌手仅明确指定时生效、别名拼接匹配、伴奏排除）。
