@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.14.1",
+    "0.15.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -1402,6 +1402,59 @@ class MusicPlugin(Star):
             self._active_cover_tasks[key]["status"] = status
             self._active_cover_tasks.pop(key, None)
             logger.info(f"[MatsukoCover] 翻唱任务结束: {key} -> {status}")
+        # 0.15.0：这一首结束后，把排队里的下一首接上
+        try:
+            self._start_next_queued_cover(event)
+        except Exception:
+            logger.warning(f"启动排队翻唱失败: {traceback.format_exc()}")
+
+    def _queue_cover_request(self, event: AstrMessageEvent, song_name: str,
+                             model_index: int, key_shift: Optional[int],
+                             model_display: str, artist_name: str = "",
+                             model_explicit: bool = False,
+                             max_waiting: int = 3) -> Optional[int]:
+        """当前会话有任务在跑时，把这次请求排进队列；返回排队序号，满了返回 None。"""
+        key = self._get_task_key(event)
+        queues = getattr(self, "_cover_queues", None)
+        if queues is None:
+            queues = {}
+            self._cover_queues = queues
+        items = queues.setdefault(key, [])
+        if len(items) >= max_waiting:
+            return None
+        items.append({
+            "song_name": song_name,
+            "model_index": model_index,
+            "key_shift": key_shift,
+            "model_display": model_display,
+            "artist_name": artist_name,
+            "model_explicit": model_explicit,
+        })
+        logger.info(f"[MatsukoCover] 排队翻唱: {key} | song={song_name} | 队列长度={len(items)}")
+        return len(items)
+
+    def _start_next_queued_cover(self, event: AstrMessageEvent) -> None:
+        """把队列里的下一首拉起来；没有排队就什么都不做。"""
+        key = self._get_task_key(event)
+        queues = getattr(self, "_cover_queues", {})
+        items = queues.get(key) or []
+        if not items:
+            return
+        item = items.pop(0)
+        if not self._register_active_task(event, item["song_name"], item["model_display"]):
+            items.insert(0, item)
+            return
+        task = self._create_tracked_task(self._smart_cover_async(
+            event,
+            item["song_name"],
+            item["model_index"],
+            item["key_shift"],
+            item["model_display"],
+            artist_name=item["artist_name"],
+            model_explicit=item["model_explicit"],
+        ))
+        self._bind_active_asyncio_task(event, task)
+        logger.info(f"[MatsukoCover] 开始排队翻唱: {key} | song={item['song_name']} | 剩余={len(items)}")
 
     def _get_active_task_status(self, event: AstrMessageEvent) -> Optional[Dict]:
         """获取当前会话的活跃任务状态"""
@@ -3285,7 +3338,14 @@ class MusicPlugin(Star):
                 break
 
         if not self._register_active_task(event, song_name, model_display):
-            return "⏳ 当前已有翻唱任务，请等待完成或先调用 cancel_cover_task。"
+            position = self._queue_cover_request(
+                event, song_name, model_index, key_shift,
+                model_display, artist_name=artist_name or "",
+                model_explicit=explicit_model,
+            )
+            if position is None:
+                return "⏳ 当前任务已经排了三首，等这几首做完再点吧。"
+            return f"排在第 {position} 个，前面那首做完我就接着唱《{song_name}》。"
         logger.info(
             f"[MatsukoCover任务Debug] 接受 rvc_cover 请求 | song={song_name} | "
             f"artist={artist_name or '-'} | model={model_display}"
@@ -3625,12 +3685,30 @@ class MusicPlugin(Star):
             active_task = self._get_active_task_status(event)
             if active_task:
                 elapsed = int(time.time() - active_task.get("start_time", 0))
+                # 0.15.0：不再直接拒绝，排进队列等前一首做完自动接着唱
+                queue_index = (
+                    self._find_model_index_by_name(model_name)
+                    if model_name else (model_index or self.fallback_model_index)
+                )
+                queue_display = ""
+                for info_item in self.get_models_detailed_list():
+                    if info_item["index"] == queue_index:
+                        queue_display = info_item["display"]
+                        break
+                position = self._queue_cover_request(
+                    event, song_name, queue_index,
+                    key_shift if key_shift is not None else self.default_key_shift,
+                    queue_display, artist_name=artist_name or "",
+                    model_explicit=bool(model_name) or model_index is not None,
+                )
+                if position is None:
+                    return (
+                        f"⏳ 前面《{active_task['song_name']}》还在做（{elapsed}秒），"
+                        "排队的也满了三首，等做完再点吧。"
+                    )
                 return (
-                    f"⏳ 您已经有翻唱任务在进行中啦nya～\n"
-                    f"歌曲：《{active_task['song_name']}》\n"
-                    f"状态：{active_task['status']}\n"
-                    f"已进行：{elapsed}秒\n"
-                    f"请稍等，完成后会自动发送音频喵！如果卡住了可以用 /取消翻唱任务 或 /查看翻唱任务 查看状态🐾"
+                    f"排在《{active_task['song_name']}》后面了（第 {position} 个），"
+                    f"它做完我就接着唱《{song_name}》。"
                 )
 
             if model_name:
