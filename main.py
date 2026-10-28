@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.16.2",
+    "0.17.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -459,6 +459,81 @@ class MusicPlugin(Star):
                 )
         return None, ""
 
+    def _cover_archive_dir(self) -> str:
+        path = os.path.join(_plugin_data_dir(), "archive")
+        os.makedirs(path, exist_ok=True)
+        return path
+
+    def _prune_cover_archive(self, keep_hours: int = 48) -> None:
+        """删掉超过保留期的归档音频，避免磁盘越攒越满。"""
+        try:
+            cutoff = time.time() - keep_hours * 3600
+            for name in os.listdir(self._cover_archive_dir()):
+                full = os.path.join(self._cover_archive_dir(), name)
+                if os.path.isfile(full) and os.path.getmtime(full) < cutoff:
+                    os.remove(full)
+        except OSError as error:
+            logger.debug(f"清理翻唱归档失败: {error}")
+
+    def _archive_cover_file(self, result_path: str, song_name: str = "翻唱") -> str:
+        """把没发出去的成品复制到插件数据目录，返回取回编号。"""
+        try:
+            safe = re.sub(r'[\\/:*?"<>|]', "", song_name).strip()[:24] or "翻唱"
+            stamp = time.strftime("%m%d-%H%M%S")
+            archive_id = f"{stamp}_{safe}"
+            target = os.path.join(self._cover_archive_dir(), archive_id + ".wav")
+            shutil.copy2(result_path, target)
+            self._prune_cover_archive()
+            logger.info(f"[MatsukoCover] 音频已归档：{archive_id} -> {target}")
+            return archive_id
+        except Exception as error:
+            logger.warning(f"归档翻唱音频失败: {error}")
+            return ""
+
+    def _find_archived_cover(self, archive_id: str) -> str:
+        """按编号（或编号前缀）找归档文件，找不到返回空串。"""
+        wanted = str(archive_id or "").strip()
+        if not wanted:
+            return ""
+        directory = self._cover_archive_dir()
+        exact = os.path.join(directory, wanted + ".wav")
+        if os.path.isfile(exact):
+            return exact
+        matches = sorted(
+            name for name in os.listdir(directory)
+            if name.endswith(".wav") and name.startswith(wanted)
+        )
+        if len(matches) == 1:
+            return os.path.join(directory, matches[0])
+        return ""
+
+    @filter.command("取回翻唱")
+    async def fetch_archived_cover(self, event: AstrMessageEvent):
+        """把当时没发出去的翻唱音频重新发一次。"""
+        archive_id = str(event.message_str or "").replace("取回翻唱", "").strip()
+        if not archive_id:
+            directory = self._cover_archive_dir()
+            files = sorted(
+                (name for name in os.listdir(directory) if name.endswith(".wav")),
+                reverse=True,
+            )[:10]
+            if not files:
+                yield event.plain_result("暂时没有存下来的翻唱音频。")
+                return
+            listing = "\n".join("· " + os.path.splitext(name)[0] for name in files)
+            yield event.plain_result(f"用法：/取回翻唱 <编号>\n最近存档：\n{listing}")
+            return
+        path = self._find_archived_cover(archive_id)
+        if not path:
+            yield event.plain_result(f"没找到编号 {archive_id} 的存档，发 /取回翻唱 看最近有哪些。")
+            return
+        try:
+            await event.send(event.chain_result([Record(file=path)]))
+            yield event.plain_result("已重新发送上面那条音频。")
+        except Exception as error:
+            logger.error(f"重发归档音频失败: {error}")
+            yield event.plain_result(f"发送失败：{error}")
+
     async def _send_cover_result(self, event: AstrMessageEvent, result_path: str, song_name: str = "翻唱", cache_hit: bool = False):
         if not result_path or not os.path.exists(result_path):
             await event.send(event.plain_result("生成失败，后端未返回有效文件路径。"))
@@ -558,6 +633,13 @@ class MusicPlugin(Star):
                 "已完成多次重试，请查看 LLBot 日志中的 upload_group_file 错误。"
             ))
         if not record_sent and not file_sent:
+            # 0.17.0：发不出去时把成品存下来，给个编号让用户事后取回，别直接丢
+            archive_id = self._archive_cover_file(result_path, song_name)
+            if archive_id:
+                raise RuntimeError(
+                    f"QQ语音和文件均发送失败（{record_error or '未知错误'}）；"
+                    f"成品已存为 {archive_id}，发 /取回翻唱 {archive_id} 可以重新取"
+                )
             raise RuntimeError(f"QQ语音和文件均发送失败: {record_error or '未知错误'}")
         if not record_sent and file_sent:
             await event.send(event.plain_result("⚠️ QQ语音上传失败，已自动改为发送音频文件。"))
