@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.15.3",
+    "0.16.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -241,6 +241,15 @@ class MusicPlugin(Star):
         self.llm_force_mode = config.get("llm_force_mode", False)
         self.enable_smart_cover = config.get("enable_smart_cover", True)
         self.enable_enhanced_context = config.get("enable_enhanced_context", True)
+        # 0.16.0：按人格自动选歌（用户没给歌名时要求模型按人设挑，避开烂大街热歌）
+        self.persona_song_pick_enable = bool(config.get("persona_song_pick_enable", False))
+        self.persona_song_pick_hint = str(config.get("persona_song_pick_hint", "") or "").strip()
+        try:
+            self.persona_song_pick_avoid_count = max(
+                0, min(50, int(config.get("persona_song_pick_avoid_count", 12)))
+            )
+        except (TypeError, ValueError):
+            self.persona_song_pick_avoid_count = 12
         self.enable_confirm_mechanism = config.get("enable_confirm_mechanism", True)
         self.enable_batch_cover = config.get("enable_batch_cover", True)
         self.enable_preference_learning = config.get("enable_preference_learning", True)
@@ -572,6 +581,59 @@ class MusicPlugin(Star):
         except Exception as e:
             logger.error(f"加载偏好数据失败: {e}")
             self.user_preferences = {}
+
+    def _recent_covered_songs(self, limit: int = 12) -> List[str]:
+        """从使用记录里取最近唱过的歌（所有人合并，去重，保留最近的）。"""
+        if limit <= 0:
+            return []
+        seen: List[str] = []
+        for pref in (self.user_preferences or {}).values():
+            songs = pref.get("favorite_songs") or []
+            for entry in reversed(songs):  # 列表是追加顺序，倒着取才是最近
+                text = str(entry or "").strip()
+                if text and text not in seen:
+                    seen.append(text)
+                if len(seen) >= limit:
+                    return seen
+        return seen
+
+    def _persona_song_rule(self) -> str:
+        """拼出「按人格选歌」的规则文本；没开启时返回空串。"""
+        if not getattr(self, "persona_song_pick_enable", False):
+            return ""
+        recent = self._recent_covered_songs(getattr(self, "persona_song_pick_avoid_count", 12))
+        parts = [
+            "【自动选歌规则】",
+            "当用户没有明确说出歌名（例如只说「唱首歌」「来一首」「随便唱」），不要反问、也不要默认挑最热门的歌；",
+            "请结合你当前的人格设定（年龄、性格、喜好、时代感、口头习惯）自己挑一首，",
+            "避开近两年短视频和榜单上最烂大街的那些，优先与人设气质相符、可以偏冷门的作品。",
+            "挑定后直接调用 smart_cover 翻唱，并顺口说一句为什么这首歌符合你。",
+        ]
+        if recent:
+            parts.append("最近已经唱过下面这些，别再重复：" + "、".join(recent) + "。")
+        hint = str(getattr(self, "persona_song_pick_hint", "") or "").strip()
+        if hint:
+            parts.append("额外的选歌偏好：" + hint)
+        return "".join(parts)
+
+    @filter.on_llm_request()
+    async def inject_persona_song_rule(self, event: AstrMessageEvent, req):
+        """把选歌规则拼进系统提示词；只影响这一次请求，不改全局人格。"""
+        try:
+            rule = self._persona_song_rule()
+            if not rule:
+                return
+            # 只在「像是在点唱」的消息上加，普通聊天不背这段提示词
+            text = str(getattr(event, "message_str", "") or "")
+            if not re.search(r"唱|翻唱|来一首|点歌|来首", text):
+                return
+            current = getattr(req, "system_prompt", "") or ""
+            if "【自动选歌规则】" in current:
+                return
+            req.system_prompt = (current + "\n\n" + rule).strip()
+            logger.debug("已注入按人格选歌规则（最近 %d 首不重复）", getattr(self, "persona_song_pick_avoid_count", 12))
+        except Exception as error:
+            logger.debug(f"注入选歌规则失败，忽略: {error}")
 
     async def _save_preferences(self):
         """保存用户偏好数据（异步安全）"""
