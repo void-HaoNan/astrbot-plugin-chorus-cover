@@ -104,6 +104,12 @@
     "hint": "留空 = 用中间层当前的目录（默认是 RVC 整合包的 assets\\weights）。\n\n想直接看真实路径并打开这个文件夹：发 /rvc模型文件夹。索引 .index 放 RVC 的 assets\\indices，这个不用填。\n\n想换目录：.pth 放过去 → 给中间层设环境变量 CHORUS_WEIGHTS_DIR 并重启 → 回来填同一个路径（不填也行，填了会拿来做一致性核对）。",
     "default": ""
   },
+  "model_library_dir": {
+    "description": "分类音色库目录（可选）",
+    "type": "string",
+    "hint": "你把模型按语言/角色分类存放的根目录，例如 D:\\Users\\你\\Documents\\GPT SoVITS-RCV 语音模型\\RVC（下面有 中文、日语 这样的子文件夹）。填了以后发 /同步音色库，插件会把库里的 .pth/.index 自动硬链接进 RVC 的 assets 目录，再把模型列表刷新一遍，不用手动建链接。留空则这条命令不可用。",
+    "default": ""
+  },
   "llm_force_mode": {
     "description": "LLM强制模式 - 禁用所有手动命令",
     "type": "bool",

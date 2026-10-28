@@ -129,23 +129,35 @@ function Ensure-Chorus([string]$Root) {
     Say '准备从 GitHub 下载 chorus-mw …' 'DarkGray'
     New-Item -ItemType Directory -Force -Path $work | Out-Null
     $zip = Join-Path $work 'chorus-mw.zip'
+    # 钉住验证过的版本；拿不到才退 main，并明确告警
+    $tag = 'v0.9.1'
     $urls = @(
-        'https://codeload.github.com/void-HaoNan/chorus-mw/zip/refs/heads/main',
-        'https://ghfast.top/https://github.com/void-HaoNan/chorus-mw/archive/refs/heads/main.zip'
+        ('https://codeload.github.com/void-HaoNan/chorus-mw/zip/refs/tags/{0}' -f $tag),
+        ('https://ghfast.top/https://github.com/void-HaoNan/chorus-mw/archive/refs/tags/{0}.zip' -f $tag),
+        'https://codeload.github.com/void-HaoNan/chorus-mw/zip/refs/heads/main'
     )
     $ok = $false
+    $picked = ''
     foreach ($url in $urls) {
         try {
             Say ("     下载 {0}" -f $url) 'DarkGray'
-            curl.exe -L --fail --max-time 180 -o $zip $url | Out-Null
-            if ((Test-Path $zip) -and ((Get-Item $zip).Length -gt 10000)) { $ok = $true; break }
+            curl.exe -L --fail --max-time 240 -o $zip $url | Out-Null
+            if ((Test-Path $zip) -and ((Get-Item $zip).Length -gt 10000)) { $ok = $true; $picked = $url; break }
         } catch { }
     }
     if (-not $ok) {
         Say '     下载失败：网络连不上 GitHub。你可以手动下载 chorus-mw 解压到上面那个目录再重跑本脚本。' 'Red'
         return ""
     }
-    Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
+    if ($picked -notmatch [regex]::Escape($tag)) {
+        Say ('     注意：没拿到 {0}，这次装的是 main 分支，版本可能比文档新。' -f $tag) 'Yellow'
+    }
+    try {
+        Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
+    } catch {
+        Say ('     压缩包损坏或不完整：{0}' -f $_.Exception.Message) 'Red'
+        return ""
+    }
     $inner = Get-ChildItem $work -Directory | Where-Object { Test-Path (Join-Path $_.FullName 'app.py') } | Select-Object -First 1
     if (-not $inner) {
         Say '     压缩包里没找到 app.py，解压失败。' 'Red'

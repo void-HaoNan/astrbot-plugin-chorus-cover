@@ -8,6 +8,7 @@ import asyncio
 import shutil
 import json
 import sys
+import subprocess
 from datetime import datetime
 from typing import Optional, Dict, List, Any, Set
 import traceback
@@ -25,6 +26,7 @@ from gradio_client import Client
 from . import netease_fetch
 from . import source_router
 from . import language_detect
+from . import model_library
 from .selection import CoverSelectionUI
 from .outbound import Outbound
 
@@ -49,11 +51,29 @@ def _plugin_data_dir() -> str:
     return path
 
 
+def _mask_url(url: str) -> str:
+    """日志里只留 scheme://host/path，去掉查询串（里面常带签名和 token）。"""
+    text = str(url or "").strip()
+    if not text:
+        return "-"
+    try:
+        from urllib.parse import urlsplit, urlunsplit
+
+        parts = urlsplit(text)
+        if not parts.scheme:
+            return text[:80]
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, "", ""))
+    except Exception:
+        return text[:80]
+
+
 def _temp_audio_dir() -> str:
     """临时音频目录：``<plugin_data>/temp_audio``（24 小时后自动清理）。"""
     path = os.path.join(_plugin_data_dir(), "temp_audio")
     os.makedirs(path, exist_ok=True)
     return path
+
+
 from .intent_gate import cover_refusal, is_music_request, message_text as event_message_text
 
 MODEL_ALIAS_SEPARATOR = "|||"
@@ -119,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.13.2",
+    "0.14.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -141,6 +161,8 @@ class MusicPlugin(Star):
         self.rvc_models_keywords = config.get("rvc_models_keywords", [])
         # 0.11.0：音色模型文件夹。留空=用中间层默认目录；填了会拿去和中间层核对
         self.rvc_models_dir = str(config.get("rvc_models_dir", "") or "").strip()
+        # 0.14.0：分类音色库根目录（中文/日语/未分类…），/同步音色库 用它自动建硬链接
+        self.model_library_dir = str(config.get("model_library_dir", "") or "").strip()
         self._models_dir_info = {}
         self.enable_rvc = config.get("enable_rvc", True)
 
@@ -731,7 +753,7 @@ class MusicPlugin(Star):
                 file_url = getattr(comp, "url", None)
                 file_name = getattr(comp, "name", "")
                 
-                logger.info(f"[LocalAudio] 发现语音/音频消息: file={file_path}, url={file_url}")
+                logger.info(f"[LocalAudio] 发现语音/音频消息: file={file_path}, url={_mask_url(file_url)}")
                 
                 # 优先使用本地路径
                 if file_path and os.path.isfile(file_path):
@@ -773,7 +795,7 @@ class MusicPlugin(Star):
                 file_path = getattr(comp, "file_", None) or getattr(comp, "file", None)
                 file_name = getattr(comp, "name", "") or ""
                 file_url = getattr(comp, "url", None)
-                logger.info(f"[LocalAudio] 发现文件消息: name={file_name}, file={file_path}, url={file_url}")
+                logger.info(f"[LocalAudio] 发现文件消息: name={file_name}, file={file_path}, url={_mask_url(file_url)}")
                 
                 if not self._is_audio_file(file_name):
                     logger.debug(f"[LocalAudio] 跳过非音频文件: {file_name}")
@@ -2487,6 +2509,194 @@ class MusicPlugin(Star):
             lines.append("⚠️ 没找到 rubberband.exe（chorus-mw\\bin 下）；升降调功能会不可用，翻唱仍可跑")
         return lines
 
+    @staticmethod
+    def _scan_model_library(root: str) -> List[dict]:
+        """扫分类库（纯逻辑在 model_library.py，这里只是转发）。"""
+        return model_library.scan_model_library(root)
+
+    def _link_into_assets(self, source: str, target: str) -> str:
+        """同盘硬链接、跨盘复制（纯逻辑在 model_library.py）。"""
+        return model_library.link_into_assets(source, target)
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("同步音色库")
+    async def sync_model_library(self, event: AstrMessageEvent):
+        """把分类库里的模型硬链接进 RVC 的 assets，再刷新列表（0.14.0）。"""
+        root = str(getattr(self, "model_library_dir", "") or "").strip()
+        if not root:
+            yield event.plain_result(
+                "❌ 还没配分类音色库目录。\n"
+                "去插件设置里把「分类音色库目录」填成你的库根目录"
+                "（例如 ...\\GPT SoVITS-RCV 语音模型\\RVC），再来发这条命令。"
+            )
+            return
+        if not os.path.isdir(root):
+            yield event.plain_result(f"❌ 目录不存在：{root}\n检查一下路径，或先在设置里改成正确的。")
+            return
+
+        try:
+            info, _models = await self._fetch_models_info()
+        except Exception as error:
+            yield event.plain_result(f"❌ 中间层不可达，先让它跑起来再同步：{error}")
+            return
+        weights_dir = str(info.get("dir") or self.rvc_models_dir or "")
+        index_dirs = list(info.get("index_dirs") or [])
+        if not weights_dir:
+            yield event.plain_result("❌ 中间层没返回模型目录，先把中间层升级到 ≥0.9.0 再来。")
+            return
+        indices_dir = index_dirs[0] if index_dirs else ""
+
+        files = self._scan_model_library(root)
+        weights = [item for item in files if item["name"].lower().endswith(".pth")]
+        indices = [item for item in files if item["name"].lower().endswith(".index")]
+        if not weights:
+            yield event.plain_result(f"❌ 库里一个 .pth 都没找到：{root}")
+            return
+
+        linked = copied = skipped = 0
+        warnings: List[str] = []
+        for item in weights:
+            target = os.path.join(weights_dir, item["name"])
+            try:
+                action = self._link_into_assets(item["path"], target)
+            except Exception as error:
+                warnings.append(f"{item['name']}：{error}")
+                continue
+            if action == "linked":
+                linked += 1
+            elif action == "copied":
+                copied += 1
+            else:
+                skipped += 1
+
+        index_linked = 0
+        if indices_dir:
+            for item in indices:
+                target = os.path.join(indices_dir, item["name"])
+                try:
+                    if self._link_into_assets(item["path"], target) in ("linked", "copied"):
+                        index_linked += 1
+                except Exception as error:
+                    warnings.append(f"{item['name']}：{error}")
+            index_stems = {os.path.splitext(item["name"])[0].lower() for item in weights}
+            for item in indices:
+                stem = os.path.splitext(item["name"])[0].lower()
+                if not any(stem in known or known in stem for known in index_stems):
+                    warnings.append(
+                        f"索引 {item['name']} 的文件名里没有对应模型名，RVC 可能匹配不到"
+                    )
+        else:
+            warnings.append("中间层没给索引目录，索引这次没同步")
+
+        try:
+            await self._update_models_from_api()
+            refreshed = f"✅ 已刷新模型列表，当前 {len(self.rvc_models_keywords)} 个"
+        except Exception as error:
+            refreshed = f"⚠️ 链接建好了，但刷新模型列表失败：{error}"
+
+        lines = [
+            "🗂 同步音色库",
+            f"库目录：{root}",
+            f"扫描到 {len(weights)} 个模型、{len(indices)} 个索引",
+            f"新建硬链接 {linked} 个、跨盘复制 {copied} 个、已存在跳过 {skipped} 个",
+            f"索引链接 {index_linked} 个",
+            refreshed,
+        ]
+        if warnings:
+            lines.append("")
+            lines.append("需要注意：")
+            lines.extend(f"· {item}" for item in warnings[:8])
+        yield event.plain_result("\n".join(lines))
+
+    def _find_chorus_dir(self, models_dir: str = "") -> str:
+        """推断中间层目录：环境变量优先，其次整合包的上两级、上三级。"""
+        root = ""
+        if models_dir:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(models_dir)))
+        candidates: List[str] = []
+        if os.environ.get("CHORUS_DIR"):
+            candidates.append(os.environ["CHORUS_DIR"])
+        if root:
+            candidates.append(os.path.join(os.path.dirname(root), "chorus-mw"))
+            candidates.append(os.path.join(os.path.dirname(os.path.dirname(root)), "chorus-mw"))
+            candidates.append(os.path.join(root, "chorus-mw"))
+        for candidate in candidates:
+            if candidate and os.path.isfile(os.path.join(candidate, "app.py")):
+                return candidate
+        return ""
+
+    def _backend_port(self) -> int:
+        try:
+            return int(str(self.rvc_base_url).split(":")[-1].strip("/ "))
+        except (ValueError, IndexError):
+            return 3333
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("重启中间层")
+    async def restart_middleware(self, event: AstrMessageEvent):
+        """停掉再拉起 chorus-mw（0.14.0），省得小白去命令行。"""
+        if os.name != "nt":
+            yield event.plain_result("这条命令只在运行机器人的 Windows 主机上可用。")
+            return
+        info: dict = {}
+        try:
+            info, _models = await self._fetch_models_info()
+        except Exception:
+            info = {}
+        models_dir = str((info or {}).get("dir") or self.rvc_models_dir or "")
+        chorus = self._find_chorus_dir(models_dir)
+        if not chorus:
+            yield event.plain_result(
+                "❌ 没找到中间层目录（里面要有 app.py 和 scripts\\start.ps1）。\n"
+                "把它放在 RVC 整合包旁边，或设环境变量 CHORUS_DIR 指向它。"
+            )
+            return
+        starter = os.path.join(chorus, "scripts", "start.ps1")
+        if not os.path.isfile(starter):
+            yield event.plain_result(f"❌ 中间层里没有启动脚本：{starter}")
+            return
+
+        port = self._backend_port()
+        yield event.plain_result(f"🔄 正在重启中间层（端口 {port}）…")
+
+        def _run(script_args: List[str]) -> str:
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            proc = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", starter] + script_args,
+                cwd=chorus,
+                capture_output=True,
+                timeout=180,
+                creationflags=flags,
+            )
+            out = (proc.stdout or b"").decode("utf-8", "ignore")
+            err = (proc.stderr or b"").decode("utf-8", "ignore")
+            return (out + "\n" + err).strip()[-400:]
+
+        try:
+            await asyncio.to_thread(_run, ["-Stop"])
+        except Exception as error:
+            logger.warning(f"停止中间层时报错（继续尝试启动）：{error}")
+
+        for _ in range(15):
+            if not await self._probe_local_port(f"http://127.0.0.1:{port}", timeout=1.5):
+                break
+            await asyncio.sleep(1)
+
+        try:
+            await asyncio.to_thread(_run, [])
+        except Exception as error:
+            yield event.plain_result(f"❌ 启动脚本执行失败：{error}")
+            return
+
+        for _ in range(60):
+            if await self._probe_local_port(f"http://127.0.0.1:{port}", timeout=1.5):
+                yield event.plain_result(f"✅ 中间层已重启，{port} 在听。发 /环境自检 复核一下。")
+                return
+            await asyncio.sleep(3)
+        yield event.plain_result(
+            f"⚠️ 已执行重启，但 180 秒内 {port} 没起来。去中间层目录看 _work\\mw.log 的报错。"
+        )
+
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("环境自检")
     async def diagnose_environment(self, event: AstrMessageEvent):
@@ -3719,6 +3929,7 @@ class MusicPlugin(Star):
                     songs=songs,
                     model_index=actual_model_index,
                     key_shift=actual_key_shift,
+                    model_explicit=model_index is not None,
                 )
             )
             self._bind_active_asyncio_task(event, task)
@@ -3742,8 +3953,13 @@ class MusicPlugin(Star):
     async def _execute_batch_cover_async(self, event: AstrMessageEvent,
                                         songs: List[str],
                                         model_index: int,
-                                        key_shift: Optional[int]):
-        """异步执行批量翻唱（后台任务）"""
+                                        key_shift: Optional[int],
+                                        model_explicit: bool = False):
+        """异步执行批量翻唱（后台任务）。
+
+        ``model_explicit`` 表示模型是用户自己点的：为真时整批都用这个模型，
+        不让语言判定按每首歌换音色（否则「用三月七唱这三首」会被覆盖）。
+        """
         try:
             results = []
             success_count = 0
@@ -3757,7 +3973,10 @@ class MusicPlugin(Star):
                     )
 
                     # 执行翻唱
-                    result = await self._do_cover(event, song_name, model_index, key_shift) or ""
+                    result = await self._do_cover(
+                        event, song_name, model_index, key_shift,
+                        model_explicit=model_explicit,
+                    ) or ""
                     # 与 _smart_cover_async 保持一致：只认明确的失败标记，不用关键词猜
                     is_failed = result.startswith("❌") or result.startswith("FAIL:")
                     if is_failed:
