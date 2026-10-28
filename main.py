@@ -24,6 +24,7 @@ from gradio_client import Client
 
 from . import netease_fetch
 from . import source_router
+from . import language_detect
 from .selection import CoverSelectionUI
 from .outbound import Outbound
 
@@ -118,7 +119,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.12.2",
+    "0.13.0",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -235,6 +236,13 @@ class MusicPlugin(Star):
         self.fallback_model_index = FALLBACK_MODEL_INDEX
         # 插件设置里下拉选的默认 RVC 音色（空串表示不指定，回落到第 1 个模型）
         self.rvc_default_model = str(config.get("rvc_default_model", "") or "").strip()
+        # === 0.13.0 按歌曲语言挑音色（只认中文/日语/英文，空串表示这一档没配）===
+        self.language_model_enable = bool(config.get("language_model_enable", True))
+        self.language_models = {
+            "zh": str(config.get("language_model_zh", "") or "").strip(),
+            "ja": str(config.get("language_model_ja", "") or "").strip(),
+            "en": str(config.get("language_model_en", "") or "").strip(),
+        }
         self.default_key_shift = config.get("default_key_shift", 0)
         self.f0_method = config.get("f0_method", "rmvpe")
         self.index_rate = _bounded_float(config, "index_rate", 0.75, 0.0, 1.0)
@@ -1555,6 +1563,85 @@ class MusicPlugin(Star):
         )
         return None
 
+    def _language_model_index(self, lang: str) -> Optional[int]:
+        """把「某语言配的音色」换成当前列表里的序号；没配或找不到都返回 None。
+
+        只负责查表，不负责回落——调用方拿到 None 后按默认音色继续，
+        这样「语言没配」不会打断翻唱。
+        """
+        configured = str((getattr(self, "language_models", {}) or {}).get(lang, "") or "").strip()
+        if not configured:
+            return None
+        target = configured.lower()
+        for model in self.get_models_detailed_list():
+            if target in (model["filename"].lower(), model["name"].lower(), model["alias"].lower()):
+                return model["index"]
+        logger.warning(
+            f"language_model_{lang}={configured} 不在当前 RVC 模型列表里，"
+            f"回落到默认音色；可以用 /刷新rvc模型 重新获取模型列表"
+        )
+        return None
+
+    def _language_cache_path(self) -> str:
+        return os.path.join(_plugin_data_dir(), language_detect.CACHE_FILE_NAME)
+
+    def _language_lyric_bases(self) -> List[str]:
+        """歌词先问插件自己配的网易云接口，再问本地点歌服务（3003）。"""
+        bases: List[str] = []
+        fetcher = getattr(self, "netease_fetcher", None)
+        api_base = str(getattr(fetcher, "api_base", "") or "").strip()
+        if api_base:
+            bases.append(api_base)
+        bases.append("http://127.0.0.1:3003")
+        return bases
+
+    async def _resolve_language_model(
+        self, song: dict, flow_id: str
+    ) -> tuple:
+        """判断歌曲语言并查出该语言配的音色序号。
+
+        返回 ``(lang, evidence, index, configured_name)``：
+        ``lang`` 为空串表示判不出来（纯音乐等），``index`` 为 None 表示这一档没配或模型没了。
+        整个过程只读缓存在 plugin_data 里，判不出来也绝不打断翻唱。
+        """
+        if not getattr(self, "language_model_enable", True):
+            return "", "disabled", None, ""
+        song_name = song.get("name") or "-"
+        try:
+            lang, evidence = await asyncio.wait_for(
+                language_detect.detect_language(
+                    song,
+                    self._language_cache_path(),
+                    self._language_lyric_bases(),
+                ),
+                timeout=15,
+            )
+        except Exception as error:
+            logger.warning(f"[CoverFlow:{flow_id}] stage=language_detect | song={song_name} | 判定失败（{error}），用默认音色")
+            return "", f"error:{error}", None, ""
+
+        if not lang:
+            logger.info(
+                f"[CoverFlow:{flow_id}] stage=language_detect | song={song_name} | "
+                f"lang=unknown | evidence={evidence} | model=default"
+            )
+            return "", evidence, None, ""
+
+        configured_name = str((getattr(self, "language_models", {}) or {}).get(lang, "") or "").strip()
+        index = self._language_model_index(lang)
+        resolved = ""
+        if index:
+            try:
+                resolved = self.get_models_detailed_list()[index - 1]["display"]
+            except IndexError:
+                resolved = configured_name
+        logger.info(
+            f"[CoverFlow:{flow_id}] stage=language_detect | song={song_name} | "
+            f"lang={lang} | evidence={evidence} | configured={configured_name or '-'} | "
+            f"model={resolved or 'default'}"
+        )
+        return lang, evidence, index, configured_name
+
     def _parse_gender_map(self, entries: list) -> Dict[str, str]:
         result = {}
         for entry in entries:
@@ -1924,9 +2011,55 @@ class MusicPlugin(Star):
         ]
 
         self._set_engine_models(new_models_list)
+        self._sync_schema_model_options(
+            [item.split(MODEL_ALIAS_SEPARATOR, 1)[0] for item in new_models_list]
+        )
 
         self.config.save_config()
         logger.info(f"RVC 模型列表已更新并成功保存，共 {len(new_models_list)} 个")
+
+    def _sync_schema_model_options(self, filenames: List[str]) -> None:
+        """把当前模型列表写回 ``_conf_schema.json`` 的下拉选项（0.13.0）。
+
+        AstrBot 的设置页只认 schema 里静态的 ``options``，运行时刷新只更新内存列表
+        是不够的：用户刷新完打开设置页还是旧选项。这里在 /刷新rvc模型 之后顺带把
+        ``rvc_default_model`` 和三个语言音色下拉的选项一起重写，下次重载插件即可看到。
+        只改选项，不动任何配置值和说明文字。
+        """
+        if not filenames:
+            return
+        schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_conf_schema.json")
+        try:
+            with open(schema_path, "r", encoding="utf-8") as handle:
+                schema = json.load(handle)
+        except (OSError, json.JSONDecodeError) as error:
+            logger.warning(f"更新设置下拉选项失败（读不到 schema）：{error}")
+            return
+        if not isinstance(schema, dict):
+            return
+        changed = False
+        for key in ("rvc_default_model", "language_model_zh", "language_model_ja", "language_model_en"):
+            item = schema.get(key)
+            if not isinstance(item, dict):
+                continue
+            options = list(filenames)
+            if item.get("options") != options:
+                item["options"] = options
+                changed = True
+        if not changed:
+            return
+        try:
+            tmp_path = schema_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as handle:
+                json.dump(schema, handle, ensure_ascii=False, indent=2)
+                handle.write("\n")
+            os.replace(tmp_path, schema_path)
+            logger.info(
+                f"已把 {len(filenames)} 个模型写入设置里的四个音色下拉选项；"
+                "重载插件后设置页即可看到新模型"
+            )
+        except OSError as error:
+            logger.warning(f"写入设置下拉选项失败（不影响本次翻唱）：{error}")
 
     @staticmethod
     def _client_supports_api(client, api_name: str) -> Optional[bool]:
@@ -2843,11 +2976,14 @@ class MusicPlugin(Star):
         return f"好，我去弄这首《{song_name}》，好了直接发你。"
 
 
-    async def _do_cover(self, event: AstrMessageEvent, song_name: str, model_index: int, key_shift: Optional[int], artist_name: str = "") -> str:
+    async def _do_cover(self, event: AstrMessageEvent, song_name: str, model_index: int, key_shift: Optional[int], artist_name: str = "", model_explicit: bool = False) -> str:
         """统一的翻唱执行逻辑（只用 RVC）。
 
         ``song_name`` 原样整串交给搜歌入口；``artist_name`` 非空才当过滤条件，
         由 :func:`source_router.pick_best_song` 统一处理（不再拼搜索串）。
+
+        ``model_explicit`` 表示这次模型是用户自己点的（或工具里明确传了 model_name/序号），
+        为 True 时不做语言判定，尊重用户选择。
         """
         flow_id = uuid.uuid4().hex[:8]
         result_path = None
@@ -2902,6 +3038,26 @@ class MusicPlugin(Star):
                     f"❌ 所有音源都没找到能确认是《{song_name}》的版本"
                     f"（{search_reason}），换个更全的歌名或歌手试试。"
                 )
+
+            # === 0.13.0 按歌曲语言挑音色：用户显式指定模型时整段跳过 ===
+            lang_hint = ""
+            if not model_explicit:
+                lang, evidence, language_index, configured_name = await self._resolve_language_model(
+                    selected_song, flow_id
+                )
+                if language_index:
+                    model_index = language_index
+                elif lang:
+                    spoken = language_detect.lang_name(lang)
+                    if configured_name:
+                        lang_hint = f"没找到「{spoken}」配的音色 {configured_name}，这次先用默认音色。"
+                    else:
+                        lang_hint = f"这首是{spoken}歌，但没配{spoken}音色，这次先用默认的。"
+            if lang_hint:
+                try:
+                    await event.send(event.plain_result(lang_hint))
+                except Exception:
+                    logger.debug("语言回落提示发送失败，继续翻唱")
 
             _, keys = self.get_models_display_list()
             selected_model = keys[model_index - 1]
@@ -3163,6 +3319,9 @@ class MusicPlugin(Star):
             else:
                 actual_model_index = model_index or self.fallback_model_index
 
+            # 0.13.0：只有用户自己点名的模型才算显式选择；偏好/默认值仍然让语言配置来挑
+            model_explicit = bool(model_name) or model_index is not None
+
             actual_key_shift = (
                 key_shift if key_shift is not None else self.default_key_shift
             )
@@ -3221,6 +3380,7 @@ class MusicPlugin(Star):
                 event, song_name, actual_model_index,
                 actual_key_shift, actual_model_display,
                 artist_name=artist_name,
+                model_explicit=model_explicit,
             ))
             self._bind_active_asyncio_task(event, task)
 
@@ -3235,7 +3395,8 @@ class MusicPlugin(Star):
     async def _smart_cover_async(self, event: AstrMessageEvent, song_name: str,
                                  model_index: int, key_shift: Optional[int],
                                  model_display: str,
-                                 artist_name: str = ""):
+                                 artist_name: str = "",
+                                 model_explicit: bool = False):
         """smart_cover 异步执行函数。
 
         ``song_name`` 是用户说的歌名整串（版本名留在里面），``artist_name`` 只在
@@ -3249,6 +3410,7 @@ class MusicPlugin(Star):
             result = await self._do_cover(
                 event, song_name, model_index, key_shift,
                 artist_name=artist_name,
+                model_explicit=model_explicit,
             ) or ""
 
             # 失败判断只认明确标记：❌ 开头，或 FAIL: 开头（保留 ❌ 兼容 _do_cover 现有返回点）。

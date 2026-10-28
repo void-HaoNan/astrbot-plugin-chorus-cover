@@ -156,6 +156,60 @@
     ],
     "default": ""
   },
+  "language_model_enable": {
+    "description": "按歌曲语言自动选音色",
+    "type": "bool",
+    "hint": "开启后，翻唱前先判断这首歌是中文、日语还是英文，再用下面对应那一档的音色。用户这次自己点名了音色时以用户为准。判不出来（纯音乐、没歌词也没线索）就用默认音色，不猜。",
+    "default": true
+  },
+  "language_model_zh": {
+    "description": "中文歌用的音色",
+    "type": "string",
+    "hint": "唱中文歌时优先用它。留空表示中文歌走「默认音色」；选项由 /刷新rvc模型 更新，选中的模型被删掉时会回落到默认音色并提示一句。",
+    "options": [
+      "Yuuka.pth",
+      "ainuo.pth",
+      "guanguanV1.pth",
+      "keruanV1.pth",
+      "kikiV1.pth",
+      "youzhanv2-xi.pth",
+      "三月七.pth",
+      "安可CN.pth"
+    ],
+    "default": ""
+  },
+  "language_model_ja": {
+    "description": "日语歌用的音色",
+    "type": "string",
+    "hint": "唱日语歌时优先用它。留空表示日语歌走「默认音色」；选项由 /刷新rvc模型 更新，选中的模型被删掉时会回落到默认音色并提示一句。",
+    "options": [
+      "Yuuka.pth",
+      "ainuo.pth",
+      "guanguanV1.pth",
+      "keruanV1.pth",
+      "kikiV1.pth",
+      "youzhanv2-xi.pth",
+      "三月七.pth",
+      "安可CN.pth"
+    ],
+    "default": ""
+  },
+  "language_model_en": {
+    "description": "英文歌用的音色",
+    "type": "string",
+    "hint": "唱英文歌时优先用它。留空表示英文歌走「默认音色」；选项由 /刷新rvc模型 更新，选中的模型被删掉时会回落到默认音色并提示一句。",
+    "options": [
+      "Yuuka.pth",
+      "ainuo.pth",
+      "guanguanV1.pth",
+      "keruanV1.pth",
+      "kikiV1.pth",
+      "youzhanv2-xi.pth",
+      "三月七.pth",
+      "安可CN.pth"
+    ],
+    "default": ""
+  },
   "default_key_shift": {
     "description": "默认音调调整",
     "type": "int",
