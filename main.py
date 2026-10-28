@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.15.1",
+    "0.15.2",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -3522,7 +3522,8 @@ class MusicPlugin(Star):
                     result_msg = f"⚡ 命中缓存！已成功使用 RVC 音色【{selected_model}】发送《{selected_song['name']}》({song_artist}) 的翻唱版本！"
                 else:
                     result_msg = f"已成功使用 RVC 音色【{selected_model}】生成《{selected_song['name']}》({song_artist}) 的翻唱版本！音频文件已发送。"
-                if key_shift != original_key_shift and self.enable_auto_key_shift:
+                if (key_shift != original_key_shift and self.enable_auto_key_shift
+                        and getattr(self, "enable_config_report", False)):
                     gender_label = {"male": "男", "female": "女"}.get
                     result_msg += f"\n🎵 自动升降调：{song_artist}({gender_label(artist_gender, '?')}) → {model_display}({gender_label(model_gender, '?')})，音调 {original_key_shift:+d} → {key_shift:+d}"
             else:
@@ -4021,9 +4022,10 @@ class MusicPlugin(Star):
             report_shift = int(actual_key_shift or 0)
             confirm_msg = (
                 f"📦 已接收批量翻唱任务！共 {len(songs)} 首歌曲\n"
-                f"⚙️ 配置：RVC / 第{actual_model_index}个模型 / 音调{report_shift:+d}\n"
-                f"⏳ 正在后台处理中，请稍候...\n"
-                f"💡 每完成一首会自动发送音频，最后发送汇总报告"
+                + (f"⚙️ 配置：RVC / 第{actual_model_index}个模型 / 音调{report_shift:+d}\n"
+                   if getattr(self, "enable_config_report", False) else "")
+                + f"⏳ 正在后台处理中，请稍候...\n"
+                + "💡 每完成一首会自动发送音频，最后发送汇总报告"
             )
 
             return confirm_msg
@@ -4102,14 +4104,20 @@ class MusicPlugin(Star):
                 f"✅ 成功: {success_count} 首",
                 f"❌ 失败: {fail_count} 首",
                 "",
-                f"使用的配置:",
-                f"  引擎: RVC",
-                f"  模型: 第{model_index}个",
-                f"  音调: {int(key_shift or 0):+d}",
-                "",
+            ]
+            # 0.15.2：「翻唱完成后发送配置信息报告」关掉时，不附模型/音调
+            if getattr(self, "enable_config_report", False):
+                summary_lines.extend([
+                    "使用的配置:",
+                    "  引擎: RVC",
+                    f"  模型: 第{model_index}个",
+                    f"  音调: {int(key_shift or 0):+d}",
+                    "",
+                ])
+            summary_lines.extend([
                 "-" * 50,
                 "详细结果:",
-            ]
+            ])
 
             summary_lines.extend(results)
 
