@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.15.2",
+    "0.15.3",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -151,7 +151,7 @@ class MusicPlugin(Star):
         
         self.rvc_base_url = config.get("rvc_base_url", "http://127.0.0.1:3333/")
         # 搜歌/取歌用哪个平台由 source_order 决定（默认网易云 → 酷狗 → 酷我 → QQ 音乐）
-        self.timeout = config.get("timeout", 60)
+        self.timeout = config.get("timeout", 30)
         self.selection_ui = CoverSelectionUI(
             buttons=bool(config.get("qq_official_buttons", True)),
             config_getter=context.get_config,
@@ -267,7 +267,7 @@ class MusicPlugin(Star):
         }
         self.default_key_shift = config.get("default_key_shift", 0)
         self.f0_method = config.get("f0_method", "rmvpe")
-        self.index_rate = _bounded_float(config, "index_rate", 0.75, 0.0, 1.0)
+        self.index_rate = _bounded_float(config, "index_rate", 0.8, 0.0, 1.0)
         # === 0.8.0 中间层真正会用的采样/混音参数 ===
         # 中间层 0.8.0 起把这些值按名字传进 RVC（index_rate/rms_mix_rate/protect/f0）
         # 和混音（inst_volume_db/vocal_volume_db）；老后端会在提交前按参数表探测、缺了就不传。
@@ -315,13 +315,13 @@ class MusicPlugin(Star):
         else:
             self.preference_storage_path = configured_pref
 
-        self.enable_auto_key_shift = config.get("enable_auto_key_shift", False)
+        self.enable_auto_key_shift = config.get("enable_auto_key_shift", True)
         self.enable_auto_key_shift_debug = config.get("enable_auto_key_shift_debug", False)
         self.gender_detection_timeout = max(
             3, int(config.get("gender_detection_timeout", 15))
         )
-        self.male_to_female_shift = config.get("male_to_female_shift", 12)
-        self.female_to_male_shift = config.get("female_to_male_shift", -12)
+        self.male_to_female_shift = config.get("male_to_female_shift", 5)
+        self.female_to_male_shift = config.get("female_to_male_shift", -5)
         self.artist_gender_map = self._parse_gender_map(config.get("artist_gender_map", []))
         self.model_gender_map = self._parse_gender_map(config.get("model_gender_map", []))
 
@@ -339,7 +339,7 @@ class MusicPlugin(Star):
         # === 本地音频缓存 ===
         self._recent_audio_cache: Dict[str, tuple[str, float]] = {}
         self._recent_audio_cache_ttl = config.get("local_audio_cache_ttl", 300)
-        self.max_local_audio_size_mb = config.get("max_local_audio_size_mb", 30)
+        self.max_local_audio_size_mb = config.get("max_local_audio_size_mb", 20)
         self.enable_local_audio_cover = config.get("enable_local_audio_cover", True)
         self.local_audio_auto_trigger = config.get("local_audio_auto_trigger", False)
         # 只留「翻唱」「变声」这类明确想唱的词；「转换/处理/修音」会把只想聊天
