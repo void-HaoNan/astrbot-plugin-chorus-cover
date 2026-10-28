@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.16.0",
+    "0.16.1",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -4192,11 +4192,17 @@ class MusicPlugin(Star):
 
             final_report = "\n".join(summary_lines)
 
-            # 发送汇总报告
-            try:
-                await event.send(event.plain_result(final_report))
-            except Exception as e:
-                logger.error(f"发送批量翻唱报告失败: {e}")
+            # 0.16.1：开关关掉时整份报告都不发，只写日志（每首歌的音频和完成提示照旧）
+            if getattr(self, "enable_config_report", False):
+                try:
+                    await event.send(event.plain_result(final_report))
+                except Exception as e:
+                    logger.error(f"发送批量翻唱报告失败: {e}")
+            else:
+                logger.info(
+                    "批量翻唱完成（配置报告开关关闭，未发送汇总）：成功 %d，失败 %d",
+                    success_count, fail_count,
+                )
 
             # === LLM 成功通知机制 ===
             if getattr(self, "enable_llm_success_notify", True) and success_count > 0:
