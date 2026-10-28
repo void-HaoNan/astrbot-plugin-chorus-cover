@@ -83,6 +83,13 @@
 - AstrBot `>= 4.x`
 - Python 依赖：`gradio_client`、`aiohttp`（见 `requirements.txt`）
 
+**装完插件先双击 `scripts\install.bat`**：它会找 AstrBot 数据目录、RVC 整合包、chorus-mw，
+缺什么补什么（中间层、Python 依赖、rubberband），最后启动 3333。只想看当前状态就加 `-CheckOnly`。
+完整步骤和排障见 [`INSTALL.md`](INSTALL.md)。
+
+装好以后在群里发 `/环境自检`（管理员）看结果：后端、模型、运行时、ffmpeg、三档语言音色、取歌服务
+一行一个结论，全绿才能唱。
+
 ```bash
 # 装到 AstrBot 的插件目录
 cd AstrBot/data/plugins

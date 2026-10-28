@@ -119,7 +119,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.13.1",
+    "0.13.2",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -2244,9 +2244,11 @@ class MusicPlugin(Star):
             "网易云 → 酷狗 → 酷我 → QQ 音乐。\n"
             "点歌后依次选择歌曲和音色，翻唱完成后发送音频；\n"
             "选择菜单支持按钮、序号、翻页和取消。\n"
-            "LLM 强制模式下，请直接说“帮我翻唱《歌名》”。",
+            "LLM 强制模式下，请直接说“帮我翻唱《歌名》”。\n\n"
+            "装完跑一次 /环境自检，哪里红一眼看到。",
             actions=[
                 ("RVC 音色", "刷新rvc模型"),
+                ("环境自检", "环境自检"),
                 ("分离模型", "列出msst模型"),
                 ("翻唱任务", "查看翻唱任务"),
                 ("我的统计", "我的翻唱统计"),
@@ -2448,6 +2450,113 @@ class MusicPlugin(Star):
             lines.append(f"⚠️ {info['warning']}")
 
         yield event.plain_result("\n".join(lines))
+
+    def _check_paths(self, models_dir: str) -> List[str]:
+        """按模型目录反推 RVC 整合包根目录，检查运行时、ffmpeg 和中间层二进制。"""
+        lines: List[str] = []
+        root = ""
+        if models_dir:
+            root = os.path.dirname(os.path.dirname(os.path.abspath(models_dir)))
+        if not root or not os.path.isdir(root):
+            lines.append("❌ 推断不出 RVC 整合包目录（模型目录还不可用）")
+            return lines
+        lines.append(f"✅ RVC 整合包：{root}")
+
+        runtime_python = os.path.join(root, "runtime", "python.exe")
+        lines.append(("✅ " if os.path.isfile(runtime_python) else "❌ ") + f"RVC 运行时：{runtime_python}")
+
+        ffmpeg = os.path.join(root, "ffmpeg.exe")
+        lines.append(("✅ " if os.path.isfile(ffmpeg) else "❌ ") + f"ffmpeg：{ffmpeg}")
+
+        # 中间层一般和整合包并排（或再上一层）；rubberband 在它的 bin 目录里
+        parent = os.path.dirname(root)
+        grandparent = os.path.dirname(parent)
+        for candidate in (
+            os.path.join(parent, "chorus-mw"),
+            os.path.join(grandparent, "chorus-mw"),
+            os.path.join(root, "chorus-mw"),
+            os.environ.get("CHORUS_DIR", ""),
+        ):
+            if not candidate:
+                continue
+            rubber = os.path.join(candidate, "bin", "rubberband.exe")
+            if os.path.isfile(rubber):
+                lines.append(f"✅ 升降调：{rubber}")
+                break
+        else:
+            lines.append("⚠️ 没找到 rubberband.exe（chorus-mw\\bin 下）；升降调功能会不可用，翻唱仍可跑")
+        return lines
+
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("环境自检")
+    async def diagnose_environment(self, event: AstrMessageEvent):
+        """一次性检查后端、模型、运行时、ffmpeg、取歌服务，给小白一句结论。"""
+        lines = ["🔍 环境自检"]
+        problems = 0
+
+        info: dict = {}
+        models: list = []
+        try:
+            info, models = await self._fetch_models_info()
+            lines.append(f"✅ 中间层 {self.rvc_base_url} 可达，模型 {len(models)} 个")
+        except Exception as error:
+            problems += 1
+            lines.append(f"❌ 中间层不可达（{self.rvc_base_url}）：{error}")
+            lines.append("   → 去插件目录双击 install.bat，或手动跑 chorus-mw\\scripts\\start.ps1")
+
+        models_dir = str((info or {}).get("dir") or self.rvc_models_dir or "")
+        if info:
+            lines.extend(self._check_paths(models_dir))
+
+        if models:
+            names = {str(item) for item in models}
+            configured = [
+                ("中文", self.language_models.get("zh", "")),
+                ("日语", self.language_models.get("ja", "")),
+                ("英文", self.language_models.get("en", "")),
+            ]
+            for label, value in configured:
+                if not value:
+                    lines.append(f"⚠️ {label}音色没配：这类歌会用默认音色")
+                elif value not in names:
+                    problems += 1
+                    lines.append(f"❌ {label}音色配的是 {value}，但模型列表里没有它")
+                else:
+                    lines.append(f"✅ {label}音色：{value}")
+            default_model = str(getattr(self, "rvc_default_model", "") or "")
+            if default_model and default_model not in names:
+                problems += 1
+                lines.append(f"❌ 默认音色 {default_model} 不在模型列表里，发一次 /刷新rvc模型")
+        else:
+            problems += 1
+            lines.append("❌ 一个音色模型都没有：把 .pth 放进模型目录后发 /刷新rvc模型")
+
+        netease_ok = await self._probe_local_port("http://127.0.0.1:3003")
+        if netease_ok:
+            lines.append("✅ 取歌服务 3003 在线")
+        else:
+            lines.append("⚠️ 取歌服务 3003 不在线（可选）：没有它就只能用公共接口取歌，会员歌和高音质可能失败")
+
+        lines.append("")
+        lines.append("✅ 结论：可以翻唱" if problems == 0 else f"⚠️ 有 {problems} 项要修，按上面带 ❌ 的提示处理")
+        yield event.plain_result("\n".join(lines))
+
+    @staticmethod
+    async def _probe_local_port(url: str, timeout: float = 4.0) -> bool:
+        def _probe() -> bool:
+            import urllib.request
+
+            try:
+                request = urllib.request.Request(url, headers={"User-Agent": "chorus-cover-check"})
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    return 200 <= response.status < 500
+            except Exception:
+                return False
+
+        try:
+            return await asyncio.to_thread(_probe)
+        except Exception:
+            return False
 
     @filter.command("刷新rvc模型")
     async def refresh_rvc_models(self, event: AstrMessageEvent):
