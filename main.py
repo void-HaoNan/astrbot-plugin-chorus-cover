@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.14.0",
+    "0.14.1",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -3236,7 +3236,7 @@ class MusicPlugin(Star):
 
 
     @filter.llm_tool(name="rvc_cover")
-    async def rvc_cover(self, event: AstrMessageEvent, song_name: str, artist_name: Optional[str] = None, model_index: int = 1, model_name: Optional[str] = None, key_shift: int = 0) -> str:
+    async def rvc_cover(self, event: AstrMessageEvent, song_name: str, artist_name: Optional[str] = None, model_index: Optional[int] = None, model_name: Optional[str] = None, key_shift: int = 0) -> str:
         '''使用 RVC 音色模型翻唱歌曲。
 
         **只在用户明确要「唱 / 翻唱 / 变声」时调用。用户说「点歌」「放首歌」「听」是想放原曲，
@@ -3250,7 +3250,7 @@ class MusicPlugin(Star):
             artist_name(string, optional): 只有用户**明确说出歌手**时才填
                 （「周杰伦的晴天」「晴天 周杰伦 唱的」「歌手是周杰伦」）。
                 没说歌手就不要填，不许凭印象或搜索结果猜，也不要把版本名塞进来。
-            model_index(number): 使用的模型序号（从可用模型列表中选择），默认为1表示第一个模型
+            model_index(number): 使用的模型序号（从可用模型列表中选择）。不填就交给语言音色/默认音色决定
             model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
                 例如：'塔菲'会自动匹配到tafeim.pth
             key_shift(number): 音调调整，范围为-12到12，默认为0
@@ -3266,12 +3266,16 @@ class MusicPlugin(Star):
             return rejected
         if not self.enable_rvc:
             return "❌ RVC 功能已在配置中禁用。如需使用请在插件配置中设置 enable_rvc 为 true。"
+        # 0.14.1：只有用户/模型明确给了音色才算显式；没给就让语言判定挑
+        explicit_model = bool(model_name) or model_index is not None
         if model_name:
             matched = self._find_model_index_by_name(model_name)
             if matched:
                 model_index = matched
             else:
                 return f"❌ 未找到匹配的RVC模型: '{model_name}'\n\n💡 提示：使用 get_available_models 查看可用模型"
+        elif model_index is None:
+            model_index = self.fallback_model_index
 
         models_info = self.get_models_detailed_list()
         model_display = ""
@@ -3289,6 +3293,7 @@ class MusicPlugin(Star):
         task = self._create_tracked_task(self._smart_cover_async(
             event, song_name, model_index, key_shift, model_display,
             artist_name=artist_name,
+            model_explicit=explicit_model,
         ))
         self._bind_active_asyncio_task(event, task)
         # 只回一句中性短句给 LLM，具体怎么说由人格模型组织；不再拼符号和参数
