@@ -416,6 +416,12 @@
     "minimum": 20,
     "maximum": 180
   },
+  "chorus_start_seconds": {
+    "description": "指定副歌起点（秒，0=自动）",
+    "type": "int",
+    "hint": "0 表示自动挑段落。填大于 0 的秒数时，就从这一秒开始截取（时长仍按上面的模式）。遇到自动挑到说唱/念白段、转出来发糊的歌，可以用它手动挑一个干净的副歌起点。需要中间层 ≥0.9.4。",
+    "default": 0
+  },
   "enable_inject_context": {
     "description": "将翻唱任务状态注入LLM上下文记忆",
     "type": "bool",

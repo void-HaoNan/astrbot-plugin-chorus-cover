@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.16.1",
+    "0.16.2",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -298,6 +298,11 @@ class MusicPlugin(Star):
             logger.warning("chorus_seconds 配置格式错误，使用默认值 45")
             seconds = 45
         self.chorus_seconds = max(20, min(180, seconds))
+        # 0.16.2：指定副歌起点（秒）。0=自动；>0 时要求中间层 ≥0.9.4 从这一秒开始截。
+        try:
+            self.chorus_start_seconds = max(0, min(600, int(config.get("chorus_start_seconds", 0))))
+        except (TypeError, ValueError):
+            self.chorus_start_seconds = 0
 
         
         # 0.10.1：MSST 批大小/重叠/归一化/TTA 与整组 UVR5 参数已从设置页删除。
@@ -1359,6 +1364,17 @@ class MusicPlugin(Star):
         async with self._get_gradio_client(base_url) as client:
             msst_kwargs = await self._get_optional_msst_kwargs(client, base_url)
             render_kwargs = self._get_render_kwargs(client)
+            # 0.16.2：指定起点。老中间层没有这个参数，按参数表探测后再传
+            start_kwargs = {}
+            if getattr(self, "chorus_start_seconds", 0) > 0:
+                names = self._client_api_parameter_names(client, "/convert")
+                if names and "chorus_start" in names:
+                    start_kwargs["chorus_start"] = int(self.chorus_start_seconds)
+                elif not getattr(self, "_chorus_start_warned", False):
+                    self._chorus_start_warned = True
+                    logger.warning(
+                        "当前中间层不支持 chorus_start（需要 ≥0.9.4），本次仍按自动挑段处理"
+                    )
             mix_kwargs = self._get_mix_kwargs(client)
             legacy_kwargs = {
                 "song_name_src": song_name_src,
@@ -1375,6 +1391,7 @@ class MusicPlugin(Star):
                 **mix_kwargs,
                 **msst_kwargs,
                 **render_kwargs,
+                **start_kwargs,
             }
             result, cache_hit = await self._async_predict(
                 client,
