@@ -183,8 +183,7 @@
     "description": "按歌曲语言自动选音色",
     "type": "bool",
     "hint": "开启后，翻唱前先判断这首歌是中文、日语还是英文，再用下面对应那一档的音色。用户这次自己点名了音色时以用户为准。判不出来（纯音乐、没歌词也没线索）就用默认音色，不猜。",
-    "default": true,
-    "options": []
+    "default": true
   },
   "language_model_zh": {
     "description": "中文歌用的音色",

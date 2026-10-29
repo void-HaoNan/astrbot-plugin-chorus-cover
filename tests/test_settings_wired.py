@@ -64,3 +64,13 @@ def test_schema_defaults_are_serialisable():
             continue
         assert "default" in item, "%s 没有默认值" % key
         assert item.get("hint"), "%s 没有中文说明" % key
+
+def test_only_string_settings_have_options():
+    """下拉选项只属于字符串类型；给布尔加 options 会让设置页显示空下拉。"""
+    with io.open(SCHEMA, encoding="utf-8") as handle:
+        schema = json.load(handle)
+    bad = [
+        key for key, item in schema.items()
+        if isinstance(item, dict) and item.get("type") != "string" and "options" in item
+    ]
+    assert not bad, "这些非字符串设置带了 options: %r" % (bad,)
