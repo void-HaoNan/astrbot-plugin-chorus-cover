@@ -67,3 +67,9 @@ powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 实测：取歌 ✓ / 翻唱 ✓ / 排队 ✓ / 自检 ✓
 未验：<列出没跑到的>
 ```
+
+## 7. 自己训练模型时
+
+- `train.py` 的 `-sw 1` 会在 `assets/weights` 里留一堆 `xxx_e30`、`xxx_e60` 检查点，
+  它们会出现在音色列表里。训练时用 `-sw 0`，或训练完把这些文件移到 `logs/` 下。
+- 最终模型起个能被看懂的名字（例如「角色名+语言」），中间产物不要留在 `weights` 里。
