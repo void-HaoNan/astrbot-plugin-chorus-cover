@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.17.1",
+    "0.17.2",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -3461,9 +3461,10 @@ class MusicPlugin(Star):
                 伴奏版、纯享版、DJ版…）属于歌名的一部分，留在 song_name 里。
                 例：「唱雨爱司凤版」→ song_name='雨爱司凤版'，artist_name 不填；
                 「唱周杰伦的晴天」→ song_name='晴天'，artist_name='周杰伦'。
-            artist_name(string, optional): 只有用户**明确说出歌手**时才填
-                （「周杰伦的晴天」「晴天 周杰伦 唱的」「歌手是周杰伦」）。
-                没说歌手就不要填，不许凭印象或搜索结果猜，也不要把版本名塞进来。
+            artist_name(string, optional): 只要你知道这首歌的**原唱**是谁就填原唱名
+                （例如「晴天」→ '周杰伦'），插件靠它排除同名翻唱；不确定原唱就留空，
+                不要猜，更不要填翻唱歌手。用户明确说了歌手时以用户说的为准。
+                另：插件只下载原唱，只有翻唱版本时会返回提示，请照实转告用户。
             model_index(number): 使用的模型序号（从可用模型列表中选择）。不填就交给语言音色/默认音色决定
             model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
                 例如：'塔菲'会自动匹配到tafeim.pth
@@ -3815,9 +3816,10 @@ class MusicPlugin(Star):
                 - 「唱周杰伦的晴天」→ song_name='晴天'，artist_name='周杰伦'
                 版本名/别名（司凤版、伴奏版、纯享版、DJ版…）属于歌名的一部分，
                 必须留在 song_name 里，**不要**塞进 artist_name。
-            artist_name(string, optional): 只有用户**明确说出歌手**时才填
-                （如「周杰伦的晴天」「晴天 周杰伦 唱的」「歌手是周杰伦」）。
-                用户没说歌手就**绝对不要填**，不许凭印象或搜索结果猜。
+            artist_name(string, optional): 只要你知道这首歌的**原唱**是谁就填原唱名
+                （「晴天」→ '周杰伦'），插件靠它排除同名翻唱；不确定原唱就留空，
+                不要猜，也不要填翻唱歌手的名字。用户明确说了歌手时以用户为准。
+                插件只下载原唱，若只有翻唱会返回提示，请照实转告用户，不要自己换歌。
             model_index(number, optional): 模型序号（从1开始）。不指定则使用默认值或用户偏好
             model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
                 例如：'塔菲'会自动匹配到tafeim.pth，'maxmaxpoi'也能匹配
