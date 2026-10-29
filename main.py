@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.18.1",
+    "0.18.2",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -3455,7 +3455,8 @@ Args:
     song_name(string): 歌名原样填，用户自己说的版本词保留在歌名里。
     artist_name(string, optional): 知道原唱就填原唱名（如「晴天」→ 周杰伦），
         不确定就留空；不要填翻唱歌手，不要猜。插件只下载原唱。
-    model_index/model_name: 选音色，名称优先于序号。
+    model_index(number, optional): 音色序号，从 1 开始。
+    model_name(string, optional): 音色名称或别名，优先于序号。
     key_shift(number): 默认 0，一般不用传。
 
 Returns: 任务描述；异步，立刻返回，完成后自动发音频。'''
@@ -3779,7 +3780,8 @@ Args:
     song_name(string): 歌名原样填，别拆开。
     artist_name(string, optional): 知道原唱就填，插件靠它排除同名翻唱；
         不确定留空，不要填翻唱名，不要猜。只有翻唱版本时插件会返回提示，照实转告用户。
-    model_index/model_name: 选音色，名称优先于序号。
+    model_index(number, optional): 音色序号，从 1 开始。
+    model_name(string, optional): 音色名称或别名，优先于序号。
     key_shift(number, optional): 一般别传，插件按原唱与音色的性别自动配；
         用户明确说「升3调」之类才传。
 
@@ -4044,7 +4046,8 @@ Args:
 
 Args:
     songs(list[string]): 歌名列表，原样填。
-    model_index/model_name: 统一音色，名称优先。
+    model_index(number, optional): 统一使用的音色序号。
+    model_name(string, optional): 统一使用的音色名称，优先于序号。
     key_shift(number, optional): 一般别传，插件自动配。
 
 只下载原唱；某些歌只有翻唱会在结果里提示。'''
@@ -4570,7 +4573,8 @@ Args:
 
 Args:
     audio_path(string): 音频绝对路径。
-    model_name/model_index: 选音色，名称优先。
+    model_name(string, optional): 音色名称，优先于序号。
+    model_index(number, optional): 音色序号，从 1 开始。
     key_shift(number): 默认 0。'''
         rejected = self._reject_music_request(event, "cover_absolute_path_audio")
         if rejected:
@@ -4637,7 +4641,8 @@ Args:
         '''用本条消息附带或引用消息里的音频/语音翻唱。
 
 Args:
-    model_name/model_index: 选音色，名称优先。
+    model_name(string, optional): 音色名称，优先于序号。
+    model_index(number, optional): 音色序号，从 1 开始。
     key_shift(number): 默认 0。'''
         rejected = self._reject_music_request(event, "cover_local_audio")
         if rejected:

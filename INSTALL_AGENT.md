@@ -23,7 +23,7 @@
 ```powershell
 git clone https://github.com/void-HaoNan/chorus-mw
 cd chorus-mw
-$env:CHORUS_RVC_ROOT = 'D:\...\RVC20260718Nvidia50x0'
+$env:CHORUS_RVC_ROOT = 'D:\你的RVC整合包根目录'
 powershell -ExecutionPolicy Bypass -File scripts\start.ps1
 ```
 

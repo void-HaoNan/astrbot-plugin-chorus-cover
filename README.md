@@ -136,8 +136,7 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 | 音色模型 `.pth` | `<RVC 整合包>\assets\weights\` | 每个音色一个文件，放进去就能在列表里看到 |
 | 特征索引 `.index` | `<RVC 整合包>\assets\indices\` | 可选；按模型名模糊匹配，找不到也能唱，只是音色贴合度差一点 |
 
-本机实例：`D:\PYMSS-RVC\RVC20260723Nvidia50x0\RVC20260718Nvidia50x0\assets\weights\` 和
-同级的 `...\assets\indices\`。
+具体位置以 `/rvc模型文件夹` 回显为准。
 
 **别去设置里找路径，直接发命令**：`/rvc模型文件夹`（管理员）会把两个真实目录回显出来，
 并在跑机器人的这台机器上**直接把模型文件夹打开**，丢文件进去、再发一次 `/刷新rvc模型` 就行。

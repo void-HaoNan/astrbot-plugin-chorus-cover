@@ -6,6 +6,21 @@
 0.9.0 之前的条目保留发布当时的原文；其中提到的引擎、命令与配置已在 0.9.0 移除，
 现在只剩 RVC 一条链路，以本文件最上方与 `README.md` 为准。
 
+## v0.18.2（2026-10-29）
+
+**修插件加载失败，并把仓库里属于作者本机的东西清掉。**
+
+- 加载失败原因：0.17.3 压缩工具描述时，把 model_index / model_name 合并写成一行，
+  AstrBot 解析不到各自的类型注释，报「参数缺少类型注释」。现已拆成两行，逐参数带类型；
+  另外两个本地音频工具同样补齐。14 个工具全部检查过，缺失数为 0。
+- 清理仓库里的本机信息：
+  - _conf_schema.json 去掉作者自己的模型名（安可CN.pth / 安可日语.pth），默认值改空，
+    选项由 /刷新rvc模型 运行时填充；
+  - 示例路径从 D:\Users\你\Documents\... 改为 D:\你的模型库\RVC；
+  - README 删掉「本机实例」那段绝对路径；
+  - INSTALL_AGENT 的示例路径改成占位；
+  - CHANGELOG 里的本机 venv 路径、网易云服务路径改成描述性文字。
+- 版本号 0.18.1 → 0.18.2。
 ## v0.18.1（2026-10-29）
 
 **用 50 首真实歌曲跑了一遍选歌，按结果修了三处。**
@@ -649,7 +664,7 @@ id `3445953575`《雨爱》/ Settle一虾子 / 别名「司凤版」/ 138 秒。
 
 ### 验证
 
-用 AstrBot 自带 venv（`C:\Users\21903\AppData\Roaming\uv\tools\astrbot\Scripts\python.exe`）
+用 AstrBot 自带 venv（AstrBot 自带 venv 的 python）
 跑真实网络 + 真实下载（不经过 AstrBot，不重启机器人）：
 
 - 「雨爱司凤版」（song_name 整串、无 artist）→ **id 3445953575**《雨爱》- Settle一虾子
@@ -707,7 +722,7 @@ id `3445953575`《雨爱》/ Settle一虾子 / 别名「司凤版」/ 138 秒。
 
 ### 验证
 
-用 AstrBot 自带 venv（`C:\Users\21903\AppData\Roaming\uv\tools\astrbot\Scripts\python.exe`）
+用 AstrBot 自带 venv（AstrBot 自带 venv 的 python）
 独立跑真实网络 + 真实下载（不经过 AstrBot，不重启机器人）：
 
 - 「雨爱司凤版」默认顺序 → 网易云命中 **id 3445953575**《雨爱》- Settle一虾子
@@ -882,7 +897,7 @@ id `3445953575`《雨爱》/ Settle一虾子 / 别名「司凤版」/ 138 秒。
 
 - 端口 `3000`、`3001` 已被本机 SnowLuma 占用，实际服务起在 `3003`；线上插件配置里
   `netease_api_base` 填的是 `http://127.0.0.1:3003`，schema 默认值仍是 3000。
-- 服务用 `D:\PYMSS-RVC\netease-api\start.ps1` 后台常驻，日志在 `netease-api\logs\server.log`。
+- 服务用 点歌服务自带的 start.ps1 后台常驻，日志在 `netease-api\logs\server.log`。
 
 ### 版本
 

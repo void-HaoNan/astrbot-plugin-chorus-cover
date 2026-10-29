@@ -107,7 +107,7 @@
   "model_library_dir": {
     "description": "分类音色库目录（可选）",
     "type": "string",
-    "hint": "你把模型按语言/角色分类存放的根目录，例如 D:\\Users\\你\\Documents\\GPT SoVITS-RCV 语音模型\\RVC（下面有 中文、日语 这样的子文件夹）。填了以后发 /同步音色库，插件会把库里的 .pth/.index 自动硬链接进 RVC 的 assets 目录，再把模型列表刷新一遍，不用手动建链接。留空则这条命令不可用。",
+    "hint": "你把模型按语言/角色分类存放的根目录，例如 D:\\你的模型库\\RVC（下面有 中文、日语 这样的子文件夹）。填了以后发 /同步音色库，插件会把库里的 .pth/.index 自动硬链接进 RVC 的 assets 目录，再把模型列表刷新一遍，不用手动建链接。留空则这条命令不可用。",
     "default": ""
   },
   "llm_force_mode": {
@@ -175,9 +175,7 @@
       "keruanV1.pth",
       "kikiV1.pth",
       "youzhanv2-xi.pth",
-      "三月七.pth",
-      "安可CN.pth",
-      "安可日语.pth"
+      "三月七.pth"
     ],
     "default": ""
   },
@@ -185,57 +183,28 @@
     "description": "按歌曲语言自动选音色",
     "type": "bool",
     "hint": "开启后，翻唱前先判断这首歌是中文、日语还是英文，再用下面对应那一档的音色。用户这次自己点名了音色时以用户为准。判不出来（纯音乐、没歌词也没线索）就用默认音色，不猜。",
-    "default": true
+    "default": true,
+    "options": []
   },
   "language_model_zh": {
     "description": "中文歌用的音色",
     "type": "string",
     "hint": "唱中文歌时优先用它。留空表示中文歌走「默认音色」；选项由 /刷新rvc模型 更新，选中的模型被删掉时会回落到默认音色并提示一句。",
-    "options": [
-      "Yuuka.pth",
-      "ainuo.pth",
-      "guanguanV1.pth",
-      "keruanV1.pth",
-      "kikiV1.pth",
-      "youzhanv2-xi.pth",
-      "三月七.pth",
-      "安可CN.pth",
-      "安可日语.pth"
-    ],
+    "options": [],
     "default": ""
   },
   "language_model_ja": {
     "description": "日语歌用的音色",
     "type": "string",
     "hint": "唱日语歌时优先用它。留空表示日语歌走「默认音色」；选项由 /刷新rvc模型 更新，选中的模型被删掉时会回落到默认音色并提示一句。",
-    "options": [
-      "Yuuka.pth",
-      "ainuo.pth",
-      "guanguanV1.pth",
-      "keruanV1.pth",
-      "kikiV1.pth",
-      "youzhanv2-xi.pth",
-      "三月七.pth",
-      "安可CN.pth",
-      "安可日语.pth"
-    ],
+    "options": [],
     "default": ""
   },
   "language_model_en": {
     "description": "英文歌用的音色",
     "type": "string",
     "hint": "唱英文歌时优先用它。留空表示英文歌走「默认音色」；选项由 /刷新rvc模型 更新，选中的模型被删掉时会回落到默认音色并提示一句。",
-    "options": [
-      "Yuuka.pth",
-      "ainuo.pth",
-      "guanguanV1.pth",
-      "keruanV1.pth",
-      "kikiV1.pth",
-      "youzhanv2-xi.pth",
-      "三月七.pth",
-      "安可CN.pth",
-      "安可日语.pth"
-    ],
+    "options": [],
     "default": ""
   },
   "default_key_shift": {
