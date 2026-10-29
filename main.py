@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.19.4",
+    "0.19.5",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -985,7 +985,7 @@ class MusicPlugin(Star):
                     except Exception as e:
                         logger.warning(f"[LocalAudio] 通过API获取文件失败: {e}")
         
-        logger.info(f"[LocalAudio] 未从消息中提取到音频。消息链组件数: {len(msg_chain)}")
+        logger.debug(f"[LocalAudio] 未从消息中提取到音频。消息链组件数: {len(msg_chain)}")
         return None
 
     async def _download_audio(self, url: str, suffix: str = ".mp3") -> Optional[str]:
@@ -3286,6 +3286,28 @@ class MusicPlugin(Star):
                 except OSError as e: logger.error(f"删除临时音频文件失败: {e}")
 
 
+    def _guess_local_audio_language(self, text: str, file_name: str) -> str:
+        """从消息文字和文件名猜语言，用于本地音频选音色。
+
+        只做保守判断：明确说了「日语/日文」或文件名里成片假名 → ja；说「中文」→ zh；
+        说「英文」或文件名几乎全是拉丁字母 → en；其余返回空串，交给默认音色。
+        """
+        blob = f"{text or ''} {file_name or ''}"
+        lowered = blob.lower()
+        if any(word in lowered for word in ("日语", "日文", "日語", "japanese", "jpop")):
+            return "ja"
+        if any(word in lowered for word in ("中文", "国语", "华语", "chinese")):
+            return "zh"
+        if any(word in lowered for word in ("英文", "英语", "english")):
+            return "en"
+        kana = len(re.findall(r"[\u3040-\u30ff]", blob))
+        han = len(re.findall(r"[\u4e00-\u9fff]", blob))
+        if kana >= 2:
+            return "ja"
+        if han >= 2 and kana == 0:
+            return "zh"
+        return ""
+
     async def _execute_local_cover(self, event: AstrMessageEvent, audio_path: str,
                                     model_name: Optional[str] = None,
                                     model_index: Optional[int] = None,
@@ -3311,6 +3333,17 @@ class MusicPlugin(Star):
             ))
             return
 
+        # 调用方没点名音色时：先按语言挑，再回落配置里的默认音色
+        if not model_name and model_index is None and getattr(self, "language_model_enable", True):
+            guessed = self._guess_local_audio_language(
+                getattr(event, "message_str", "") or "",
+                os.path.basename(audio_path),
+            )
+            if guessed:
+                language_index = self._language_model_index(guessed)
+                if language_index:
+                    model_index = language_index
+                    logger.info("本地音频按语言选音色: lang=%s -> 第%s个模型", guessed, language_index)
         # 配置下拉选的默认 RVC 音色：调用方没给模型名也没给序号时优先用它
         if not model_name and model_index is None:
             model_index = self._configured_rvc_model_index() or 1
@@ -4619,7 +4652,19 @@ Args:
                 available = await self.get_available_models(event)
                 return f"❌ 未找到匹配的模型: '{model_name}'\n\n可用模型:\n{available}"
 
-        # 没显式指定序号时，优先用配置下拉选的默认 RVC 音色
+        # 没显式指定时：先按语言挑（本地音频也能吃语言这一套），再回落默认音色
+        if actual_model_index is None and getattr(self, "language_model_enable", True):
+            guessed = self._guess_local_audio_language(
+                getattr(event, "message_str", "") or "",
+                os.path.basename(audio_path),
+            )
+            if guessed:
+                language_index = self._language_model_index(guessed)
+                if language_index:
+                    actual_model_index = language_index
+                    logger.info(
+                        "本地音频按语言选音色: lang=%s -> 第%s个模型", guessed, language_index
+                    )
         if actual_model_index is None:
             actual_model_index = self._configured_rvc_model_index() or 1
 
@@ -4644,7 +4689,7 @@ Args:
         shift_info = f" | 升降调: {int(actual_key_shift or 0):+d}"
         if inferred_key_shift is not None:
             shift_info += f" ({inference_source})"
-        return f"🎵 正在用【{actual_model_display}】(RVC) 处理文件 {os.path.basename(audio_path)}{shift_info}... 请稍候，处理完成后会自动发送！"
+        return f"开始处理 {os.path.basename(audio_path)}，音色 {actual_model_display}{shift_info}"
 
 
     @filter.llm_tool(name="cover_local_audio")
