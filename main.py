@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.19.1",
+    "0.19.2",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -329,7 +329,7 @@ class MusicPlugin(Star):
         else:
             self.preference_storage_path = configured_pref
 
-        self.enable_auto_key_shift = config.get("enable_auto_key_shift", True)
+        self.enable_auto_key_shift = config.get("enable_auto_key_shift", False)
         self.enable_auto_key_shift_debug = config.get("enable_auto_key_shift_debug", False)
         self.gender_detection_timeout = max(
             3, int(config.get("gender_detection_timeout", 15))
