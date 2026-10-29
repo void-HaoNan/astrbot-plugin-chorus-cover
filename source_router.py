@@ -290,6 +290,15 @@ def _candidate_from_song(song: Any, source: str) -> Optional[SongCandidate]:
     )
 
 
+def _strip_version_markers(name: Any) -> str:
+    """把标题里的版本后缀去掉：「小幸运 (翻唱)」→「小幸运」。"""
+    text = str(name or "")
+    text = re.sub(r"[（(\[【][^）)\]】]*[）)\]】]", "", text)
+    for word in _COVER_VERSION_WORDS:
+        text = re.sub(word, "", text, flags=re.IGNORECASE)
+    return text.strip()
+
+
 def _match_tier(candidate: SongCandidate, normalized_query: str) -> int:
     """候选与歌名的匹配档位：2=完全相等，1=可解释的包含，0=不匹配。
 
@@ -352,11 +361,15 @@ def pick_best_song(
         return None, "only_accompaniment", stats
 
     # 1.5) 用户没点名版本时，剔除翻唱/改编版本：标题里出现翻唱、深情版、原唱 xx 之类的一律不要
+    #      例外：用户点名了这个歌手，说明他要的就是这个人的版本（哪怕它本身是翻唱）
     query_compact = re.sub(r"\s+", "", normalized_query)
     if not is_cover_version(normalized_query):
         clean_versions = []
         for candidate in playable:
             if is_cover_version(candidate.name, candidate.alias):
+                if normalized_artist and normalized_artist in normalize_text(candidate.artists):
+                    clean_versions.append(candidate)  # 用户点名了这个人，保留
+                    continue
                 stats.excluded += 1
                 continue
             clean_versions.append(candidate)
@@ -400,6 +413,17 @@ def pick_best_song(
     matches: list[tuple[int, int, SongCandidate]] = []
     for rank, candidate in enumerate(playable):
         tier = _match_tier(candidate, normalized_query)
+        if not tier and normalized_artist and normalized_artist in normalize_text(candidate.artists):
+            # 用户点名了这个歌手：把版本后缀去掉再比一次，允许他的翻唱版本命中
+            stripped = SongCandidate(
+                id=candidate.id,
+                name=_strip_version_markers(candidate.name),
+                artists=candidate.artists,
+                duration_ms=candidate.duration_ms,
+                alias="",
+                source=candidate.source,
+            )
+            tier = _match_tier(stripped, normalized_query)
         if tier:
             matches.append((tier, rank, candidate))
     if not matches:
