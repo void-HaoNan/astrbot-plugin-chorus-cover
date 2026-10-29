@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.17.2",
+    "0.17.3",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -3394,15 +3394,12 @@ class MusicPlugin(Star):
     
     @filter.llm_tool(name="search_music")
     async def search_music(self, event: AstrMessageEvent, keyword: str, limit: int = 5) -> str:
-        '''按插件配置的音源顺序搜歌（默认网易云 → 酷狗 → 酷我 → QQ 音乐）。
+        '''按插件音源顺序搜歌，返回候选（歌名/歌手/来源）。
+只用于用户要搜歌或确认版本；单纯想听原曲时按点歌流程走，别用翻唱工具。
 
-        Args:
-            keyword(string): 搜索关键词，可以是歌曲名、歌手名等
-            limit(number): 返回结果数量上限，默认为5，最大为10
-
-        Returns:
-            返回搜索到的歌曲列表，包含序号、歌名、歌手和来源音源
-        '''
+Args:
+    keyword(string): 搜索词，歌名或「歌名 歌手」。
+    limit(number): 返回条数，默认 5，最多 10。'''
         try:
             limit = min(max(limit, 1), 10)
             candidates, reason = await asyncio.wait_for(
@@ -3451,31 +3448,17 @@ class MusicPlugin(Star):
 
     @filter.llm_tool(name="rvc_cover")
     async def rvc_cover(self, event: AstrMessageEvent, song_name: str, artist_name: Optional[str] = None, model_index: Optional[int] = None, model_name: Optional[str] = None, key_shift: int = 0) -> str:
-        '''使用 RVC 音色模型翻唱歌曲。
+        '''用 RVC 音色翻唱一首歌。只在用户明确要「唱 / 翻唱 / 变声」时调用；
+用户说「点歌 / 放首歌 / 听」是想放原曲，不要用本工具。
 
-        **只在用户明确要「唱 / 翻唱 / 变声」时调用。用户说「点歌」「放首歌」「听」是想放原曲，
-        不要用本工具。**
+Args:
+    song_name(string): 歌名原样填，用户自己说的版本词保留在歌名里。
+    artist_name(string, optional): 知道原唱就填原唱名（如「晴天」→ 周杰伦），
+        不确定就留空；不要填翻唱歌手，不要猜。插件只下载原唱。
+    model_index/model_name: 选音色，名称优先于序号。
+    key_shift(number): 默认 0，一般不用传。
 
-        Args:
-            song_name(string): 用户说的歌名，**原样整串**填进来。版本名/别名（司凤版、
-                伴奏版、纯享版、DJ版…）属于歌名的一部分，留在 song_name 里。
-                例：「唱雨爱司凤版」→ song_name='雨爱司凤版'，artist_name 不填；
-                「唱周杰伦的晴天」→ song_name='晴天'，artist_name='周杰伦'。
-            artist_name(string, optional): 只要你知道这首歌的**原唱**是谁就填原唱名
-                （例如「晴天」→ '周杰伦'），插件靠它排除同名翻唱；不确定原唱就留空，
-                不要猜，更不要填翻唱歌手。用户明确说了歌手时以用户说的为准。
-                另：插件只下载原唱，只有翻唱版本时会返回提示，请照实转告用户。
-            model_index(number): 使用的模型序号（从可用模型列表中选择）。不填就交给语言音色/默认音色决定
-            model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
-                例如：'塔菲'会自动匹配到tafeim.pth
-            key_shift(number): 音调调整，范围为-12到12，默认为0
-
-        Returns:
-            翻唱结果的描述信息（异步模式会立即返回"正在处理"）
-
-        注意：
-            RVC 功能可能已在配置中禁用，此时会返回错误提示。
-        '''
+Returns: 任务描述；异步，立刻返回，完成后自动发音频。'''
         rejected = self._reject_music_request(event, "rvc_cover")
         if rejected:
             return rejected
@@ -3750,19 +3733,8 @@ class MusicPlugin(Star):
 
     @filter.llm_tool(name="get_available_models")
     async def get_available_models(self, event: AstrMessageEvent) -> str:
-        '''获取当前可用的 RVC 音色模型列表。
-
-        Args:
-            无
-
-        Returns:
-            可用模型的详细信息列表（包含序号、显示名、文件名、别名）
-
-        重要提示：
-            - 可以直接用模型名称或别名指定模型，无需记住序号
-            - 例如：model_name='塔菲' 会自动匹配到 tafeim.pth
-            - 支持模糊匹配：输入部分名称也能找到
-        '''
+        '''列出可用的 RVC 音色模型（序号、显示名、文件名、别名）。
+用户问「有哪些音色」时用；指定音色时可直接用名称，不必记序号。'''
         try:
             rvc_models = self.get_models_detailed_list()
             if not rvc_models:
@@ -3800,41 +3772,18 @@ class MusicPlugin(Star):
                          model_index: Optional[int] = None,
                          model_name: Optional[str] = None,
                          key_shift: Optional[int] = None) -> str:
-        '''智能一键 RVC 翻唱工具 - 自动完成搜索+选择+翻唱全流程！
+        '''智能翻唱：搜歌、挑版本、变声一步到位，用户要「唱」时优先用这个。
+用户要「听原曲 / 点歌」不要用本工具，那会变成翻唱。
 
-        这是最高效的翻唱方式，只需提供歌曲名即可自动完成所有步骤。
+Args:
+    song_name(string): 歌名原样填，别拆开。
+    artist_name(string, optional): 知道原唱就填，插件靠它排除同名翻唱；
+        不确定留空，不要填翻唱名，不要猜。只有翻唱版本时插件会返回提示，照实转告用户。
+    model_index/model_name: 选音色，名称优先于序号。
+    key_shift(number, optional): 一般别传，插件按原唱与音色的性别自动配；
+        用户明确说「升3调」之类才传。
 
-        **什么时候才用这个工具（务必先判断）：**
-            - 只在用户明确表达「要唱 / 唱一首 / 翻唱 / 变声 / 用某个音色唱」这类意思时才调用。
-            - 用户说「点歌」「放首歌」「来一首」「听」这类是想放**原曲**，那是点歌插件的活儿，
-              **绝对不要调用本工具**，否则会把听歌变成翻唱。
-            - 拿不准是「听原曲」还是「翻唱」时，先问一句「你要原曲还是唱一遍？」再决定。
-
-        Args:
-            song_name(string): 用户说的歌名，**原样整串**填进来，不要拆分。
-                - 「唱雨爱司凤版」→ song_name='雨爱司凤版'，artist_name 不填
-                - 「唱周杰伦的晴天」→ song_name='晴天'，artist_name='周杰伦'
-                版本名/别名（司凤版、伴奏版、纯享版、DJ版…）属于歌名的一部分，
-                必须留在 song_name 里，**不要**塞进 artist_name。
-            artist_name(string, optional): 只要你知道这首歌的**原唱**是谁就填原唱名
-                （「晴天」→ '周杰伦'），插件靠它排除同名翻唱；不确定原唱就留空，
-                不要猜，也不要填翻唱歌手的名字。用户明确说了歌手时以用户为准。
-                插件只下载原唱，若只有翻唱会返回提示，请照实转告用户，不要自己换歌。
-            model_index(number, optional): 模型序号（从1开始）。不指定则使用默认值或用户偏好
-            model_name(string, optional): 模型名称或别名（支持模糊匹配）。优先级高于model_index
-                例如：'塔菲'会自动匹配到tafeim.pth，'maxmaxpoi'也能匹配
-            key_shift(number, optional): 音调调整，范围 -12 到 12；不指定则使用默认值或用户偏好。
-                调用此工具前，你应该分析原曲演唱者性别与目标模型音域的匹配关系（如周杰伦男声→塔菲喵女声）。但分析完成后请不要传入 key_shift，插件会根据分析结果自动应用配置中的升降调值（男→女用 male_to_female_shift，女→男用 female_to_male_shift）。只有当用户明确要求特定数值（如"升3调"）时才传入 key_shift。
-
-        Returns:
-            翻唱结果描述（异步模式会立即返回"正在处理"）
-
-        注意：
-            - model_name 支持中文别名和文件名，无需记住序号！
-            - 如果同时指定 model_index 和 model_name，以 model_name 为准
-            - 本工具采用异步执行，会立即返回并后台处理，完成后自动发送音频
-            - 取歌走插件配置的音源顺序（默认网易云 → 酷狗 → 酷我 → QQ 音乐）
-        '''
+Returns: 任务描述；异步，立刻返回，完成后自动发音频。'''
         rejected = self._reject_music_request(event, "smart_cover")
         if rejected:
             return rejected
@@ -4030,18 +3979,12 @@ class MusicPlugin(Star):
                                selection_type: str,
                                selection_data: str,
                                action: str = "confirm") -> str:
-        '''确认或修改用户的 selections - 支持自然语言交互！
+        '''确认或修改上一轮的翻唱选择，用于「就这个 / 换一个 / 取消」这类回应。
 
-        当用户说'就这个''换一个''确定''取消'等自然语言时使用此工具。
-        
-        Args:
-            selection_type(string): 选择类型，'song'(歌曲)、'model'(模型)、'config'(配置)
-            selection_data(string): 当前选择的描述信息，如'歌曲：《晴天》-周杰伦'或'模型：第3个-RVC'
-            action(string): 用户意图，'confirm'(确认)、'change'(更换)、'cancel'(取消)、'info'(查看详情)
-        
-        Returns:
-            确认结果和下一步建议
-        '''
+Args:
+    selection_type(string): song / model / config。
+    selection_data(string): 当前选择或要改成的值。
+    action(string): confirm / change / cancel / info，默认 confirm。'''
         if not self.enable_confirm_mechanism:
             return "确认机制已在配置中禁用。"
         
@@ -4096,24 +4039,15 @@ class MusicPlugin(Star):
                          songs: List[str],
                          model_index: Optional[int] = None,
                          key_shift: Optional[int] = None) -> str:
-        '''批量 RVC 翻唱多首歌曲 - 异步后台执行，支持长时间任务！
+        '''批量翻唱，一次交多首，异步逐首处理，每完成一首就发音频。
+只在用户明确要一次唱多首时用。
 
-        适合说'帮我翻唱这几首歌：《A》《B》《C》'的场景。
+Args:
+    songs(list[string]): 歌名列表，原样填。
+    model_index/model_name: 统一音色，名称优先。
+    key_shift(number, optional): 一般别传，插件自动配。
 
-        重要特性：
-            - 异步执行：立即返回确认消息，后台处理翻唱
-            - 实时推送：每完成一首歌立即发送音频文件
-            - 超时安全：不受60秒工具超时限制
-
-        Args:
-            songs(list[string]): 要翻唱的歌曲名称列表（必填）
-            model_index(number, optional): 统一使用的模型序号
-            key_shift(number, optional): 统一音调值，范围 -12 到 12。
-                调用此工具前，你应该分析原曲演唱者性别与目标模型音域的匹配关系（如周杰伦男声→塔菲喵女声）。但分析完成后请不要传入 key_shift，插件会根据分析结果自动应用配置中的升降调值（男→女用 male_to_female_shift，女→男用 female_to_male_shift）。只有当用户明确要求特定数值（如"升3调"）时才传入 key_shift。
-
-        Returns:
-            任务确认信息（实际结果会异步推送到聊天中）
-        '''
+只下载原唱；某些歌只有翻唱会在结果里提示。'''
         rejected = self._reject_music_request(event, "batch_cover")
         if rejected:
             return rejected
@@ -4336,19 +4270,11 @@ class MusicPlugin(Star):
     async def save_preference(self, event: AstrMessageEvent,
                              preference_type: str,
                              value: str) -> str:
-        '''保存用户的偏好设置 - 让AI记住你的喜好！
+        '''保存用户默认偏好，下次翻唱自动套用。
 
-        可以保存常用的模型、音调等设置，下次翻唱时自动应用。
-
-        Args:
-            preference_type(string): 偏好类型：
-                - 'model_index': 默认模型序号 (数字字符串)
-                - 'key_shift': 默认音调调整（-12 到 12）
-            value(string): 偏好值（统一使用字符串传入，系统会自动转换）
-
-        Returns:
-            保存结果确认
-        '''
+Args:
+    preference_type(string): model / key_shift 等。
+    value(string): 偏好值。'''
         if not self.enable_preference_learning:
             return "偏好学习功能已在配置中禁用。"
 
@@ -4399,16 +4325,10 @@ class MusicPlugin(Star):
     @filter.llm_tool(name="get_recommendation")
     async def get_recommendation(self, event: AstrMessageEvent,
                                 song_name: Optional[str] = None) -> str:
-        '''基于历史记录智能推荐最佳翻唱配置！
+        '''按用户历史给出音色与参数推荐。
 
-        分析用户的历史使用习惯，推荐最合适的模型和参数。
-        
-        Args:
-            song_name(string, optional): 计划翻唱的歌曲名（可选，用于结合歌曲特征推荐）
-        
-        Returns:
-            推荐的配置方案和使用理由
-        '''
+Args:
+    song_name(string, optional): 想唱的歌；不填给通用建议。'''
         if not self.enable_preference_learning:
             return "偏好学习功能已在配置中禁用。无法提供个性化推荐。"
         
@@ -4506,13 +4426,7 @@ class MusicPlugin(Star):
 
     @filter.llm_tool(name="view_my_stats")
     async def view_my_stats(self, event: AstrMessageEvent) -> str:
-        '''查看个人使用统计和历史记录。
-
-        显示您的翻唱历史、常用配置、收藏歌曲等信息。
-        
-        Returns:
-            个人统计信息的详细报告
-        '''
+        '''查看当前用户的翻唱统计与常用音色。'''
         if not self.enable_preference_learning:
             return "偏好学习功能已在配置中禁用。无法查看统计数据。"
         
@@ -4590,13 +4504,7 @@ class MusicPlugin(Star):
 
     @filter.llm_tool(name="clear_my_history")
     async def clear_my_history(self, event: AstrMessageEvent) -> str:
-        '''清空个人的翻唱历史和偏好数据。
-
-        删除所有与当前用户相关的使用记录、偏好设置、收藏等信息。
-        
-        Returns:
-            清除操作的结果确认
-        '''
+        '''清空当前用户的翻唱历史与偏好，不可恢复；执行前提一句。'''
         if not self.enable_preference_learning:
             return "偏好学习功能已在配置中禁用。无需清除数据。"
         
@@ -4658,25 +4566,12 @@ class MusicPlugin(Star):
                                          model_name: Optional[str] = None,
                                          model_index: Optional[int] = None,
                                          key_shift: Optional[int] = None) -> str:
-        '''将指定绝对路径的音频文件进行 RVC 翻唱/音色转换。
+        '''用服务器上已有音频文件翻唱（用户给了本机绝对路径时）。
 
-        当配合其他插件（如 ide_sandbox）获取到了本地文件的绝对路径，并且用户要求对其进行翻唱时使用此工具。
-        注意：只能处理本机确实存在的音频文件路径。
-
-        【关于音调调整】
-        如果你不确定应该升调还是降调，请不要传入 key_shift 参数，插件会根据歌曲和模型的匹配关系自动推断最佳音调。
-        只有当用户明确要求特定音调（如"升3调"、"降2调"）时，才需要传入 key_shift。
-
-        Args:
-            audio_path(string): 必须是音频文件的完整绝对路径（如 C:\\path\\to\\audio.mp3）
-            model_name(string, optional): 模型名称或别名（支持模糊匹配）。不指定则使用默认模型
-            model_index(number, optional): 模型序号（从1开始）。不指定则使用默认模型
-            key_shift(number, optional): 音调调整，范围 -12 到 12；不指定则使用默认配置。
-                调用此工具前，你应该分析原曲演唱者性别与目标模型音域的匹配关系（如周杰伦男声→塔菲喵女声）。但分析完成后请不要传入 key_shift，插件会根据分析结果自动应用配置中的升降调值（男→女用 male_to_female_shift，女→男用 female_to_male_shift）。只有当用户明确要求特定数值（如"升3调"）时才传入 key_shift。
-
-        Returns:
-            处理结果的描述信息（异步执行，完成后自动发送音频）
-        '''
+Args:
+    audio_path(string): 音频绝对路径。
+    model_name/model_index: 选音色，名称优先。
+    key_shift(number): 默认 0。'''
         rejected = self._reject_music_request(event, "cover_absolute_path_audio")
         if rejected:
             return rejected
@@ -4739,23 +4634,11 @@ class MusicPlugin(Star):
                                  model_name: Optional[str] = None,
                                  model_index: Optional[int] = None,
                                  key_shift: Optional[int] = None) -> str:
-        '''将用户发送的本地音频文件或语音消息进行 RVC 翻唱/音色转换。
+        '''用本条消息附带或引用消息里的音频/语音翻唱。
 
-        当用户发送了语音或音频文件并要求"翻唱这个"、"把我的声音变成塔菲"、"修音"时使用此工具。
-
-        【关于音调调整】
-        如果你不确定应该升调还是降调，请不要传入 key_shift 参数，插件会根据歌曲和模型的匹配关系自动推断最佳音调。
-        只有当用户明确要求特定音调（如"升3调"、"降2调"）时，才需要传入 key_shift。
-
-        Args:
-            model_name(string, optional): 模型名称或别名（支持模糊匹配）。不指定则使用默认模型
-            model_index(number, optional): 模型序号（从1开始）。不指定则使用默认模型
-            key_shift(number, optional): 音调调整，范围 -12 到 12；不指定则使用默认配置。
-                调用此工具前，你应该分析原曲演唱者性别与目标模型音域的匹配关系（如周杰伦男声→塔菲喵女声）。但分析完成后请不要传入 key_shift，插件会根据分析结果自动应用配置中的升降调值（男→女用 male_to_female_shift，女→男用 female_to_male_shift）。只有当用户明确要求特定数值（如"升3调"）时才传入 key_shift。
-
-        Returns:
-            处理结果的描述信息（异步执行，完成后自动发送音频）
-        '''
+Args:
+    model_name/model_index: 选音色，名称优先。
+    key_shift(number): 默认 0。'''
         rejected = self._reject_music_request(event, "cover_local_audio")
         if rejected:
             return rejected
@@ -4817,13 +4700,7 @@ class MusicPlugin(Star):
     
     @filter.llm_tool(name="get_task_status")
     async def get_task_status(self, event: AstrMessageEvent) -> str:
-        '''查询当前是否有正在进行的翻唱任务。
-
-        当用户问"我的翻唱好了吗"、"任务进行得怎么样了"或"有没有在翻唱"时使用此工具。
-        
-        Returns:
-            当前翻唱任务的状态信息
-        '''
+        '''查询当前会话翻唱任务的进度或队列位置。'''
         if not self.enable_task_tracking:
             return "任务追踪功能已在配置中禁用。"
         
@@ -4846,13 +4723,7 @@ class MusicPlugin(Star):
 
     @filter.llm_tool(name="cancel_cover_task")
     async def cancel_cover_task(self, event: AstrMessageEvent) -> str:
-        '''取消当前正在进行的翻唱任务。
-
-        当用户说"取消翻唱"、"不唱了"、"停下来"或任务卡住太久时使用此工具。
-        
-        Returns:
-            取消操作的结果
-        '''
+        '''取消当前会话正在排队或进行中的翻唱任务。'''
         if not self.enable_task_tracking:
             return "任务追踪功能已在配置中禁用。"
         
