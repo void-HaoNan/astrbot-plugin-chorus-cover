@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.18.4",
+    "0.18.5",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -2221,6 +2221,15 @@ class MusicPlugin(Star):
             self._models_dir_info = info
         return (info if isinstance(info, dict) else {}), models
 
+    async def _startup_refresh_models(self) -> None:
+        """启动后延迟几秒再拉模型，给中间层留出就绪时间；失败不影响启动。"""
+        try:
+            await asyncio.sleep(8)
+            await self._update_models_from_api()
+            logger.info("启动时已同步模型下拉选项")
+        except Exception as error:
+            logger.warning(f"启动同步模型列表失败（不影响使用）：{error}")
+
     async def _update_models_from_api(self):
         """从 RVC 后端拉一遍模型列表，保留已配的别名后写回插件配置。"""
         info, model_list_from_api = await self._fetch_models_info()
@@ -3179,6 +3188,11 @@ class MusicPlugin(Star):
     async def initialize(self):
         """Bind QQ callback handlers to platform clients already loaded."""
         self.selection_ui.bind_platforms(self.context.platform_manager.platform_insts)
+        # 启动时后台拉一次模型列表，把设置页下拉的选项同步成最新的
+        try:
+            asyncio.create_task(self._startup_refresh_models())
+        except Exception as error:
+            logger.debug(f"启动同步模型列表失败：{error}")
 
     @filter.on_platform_loaded(priority=sys.maxsize)
     async def on_qq_platform_loaded(self):
