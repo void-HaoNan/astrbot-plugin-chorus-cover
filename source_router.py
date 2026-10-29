@@ -321,22 +321,32 @@ def _match_tier(candidate: SongCandidate, normalized_query: str) -> int:
 def pick_best_song(
     candidates: list[SongCandidate], query: str, artist: str = ""
 ) -> tuple[Optional[SongCandidate], str, MatchStats]:
-    """按用户定的确定规则挑歌；一个都不像就返回空。
+    """按一套打分规则挑歌：像成熟音乐匹配器那样给每个候选算总分，取最高分。
 
-    规则（宁可不选，也不选错）：
+    设计参考音乐库匹配（beets / MusicBrainz / yt-dlp 的 match_filter）的常见做法：
+    先把「硬条件」当门槛，再用加权分数排序，而不是一堆 if 互相覆盖。
 
-    1. 标题或别名里带伴奏类标记的，直接淘汰（翻唱会出静音）；
-    2. 给了 ``artist`` 才按歌手过滤；没有任何候选的歌手包含它时，记一行
-       ``artist_filter_ignored``，改把它当版本别名（只留别名里含这个词的候选），
-       一个都没有就判「没有能确认的版本」；
-    3. 匹配只分两档（见 :func:`_match_tier`）：完全相等优先，其次是剩余字符全部来自别名的包含；
-    4. 同档取舍：先剔除时长不到同档最长候选 90% 的（片段/剪辑），再按搜索顺序取第一条。
+    硬条件（不满足直接出局）：
+        - 标题/别名带伴奏、纯音乐、消音等标记——没人声，翻唱只会静音；
+        - 用户点名了歌手，但候选歌手对不上；
+        - 用户点名了版本词（女声版、Live…），候选里没有这个词。
 
-    不再有标题长度打分、歌手加分、标题互相包含之类的模糊规则。
+    打分（越高越优先）：
+        +100 标题与歌名完全一致
+         +88 去掉版本后缀后完全一致（「小幸运 (翻唱)」→「小幸运」）
+         +70 歌名包含在标题里
+         +55 其余情况按词重合度给分（低于 0.8 直接算不匹配）
+         +45 歌手精确命中（用户没点歌手时不给分）
+         +25 命中了用户点名的版本词
+         -45 没点名歌手时的翻唱/改编版本（原唱优先）
+         -40 时长不足 60 秒的试听/片段
+          +3 时长正常（≥120 秒）的完整曲目
+
+    没有候选达到 50 分就返回「没有能确认的版本」，不硬凑。
 
     Returns:
-        ``(候选 或 None, 状态, 统计)``。状态取 ``ok`` / ``empty`` / ``no_match`` /
-        ``only_accompaniment``；统计里记总候选数、被伴奏规则淘汰数、正选数。
+        ``(候选 或 None, 状态, 统计)``，状态取 ``ok`` / ``empty`` / ``no_match`` /
+        ``only_accompaniment``。
     """
     stats = MatchStats(total=len(candidates))
     usable = [c for c in candidates if isinstance(c, SongCandidate)]
@@ -346,106 +356,95 @@ def pick_best_song(
     normalized_query = normalize_text(query)
     normalized_artist = normalize_text(artist)
     if not normalized_query:
-        first = usable[0]
         stats.matched = 1
-        return first, "ok", stats
+        return usable[0], "ok", stats
 
-    # 1) 先排除伴奏类：这些版本没有人声，选中也只会出静音
-    playable: list[SongCandidate] = []
-    for candidate in usable:
+    # 用户点名的版本词（女声版、现场版、DJ版…）
+    user_versions = [w for w in _COVER_VERSION_WORDS if w in normalized_query]
+
+    scored: list[tuple[float, int, SongCandidate]] = []
+    excluded = 0
+    for index, candidate in enumerate(usable):
+        name_raw = f"{candidate.name} {candidate.alias}"
+        name_norm = normalize_text(name_raw)
+        stripped_norm = normalize_text(_strip_version_markers(candidate.name))
+        artist_norm = normalize_text(candidate.artists)
+
         if is_accompaniment(candidate.name, candidate.alias):
-            stats.excluded += 1
+            excluded += 1
             continue
-        playable.append(candidate)
-    if not playable:
-        return None, "only_accompaniment", stats
 
-    # 1.5) 用户没点名版本时，剔除翻唱/改编版本：标题里出现翻唱、深情版、原唱 xx 之类的一律不要
-    #      例外：用户点名了这个歌手，说明他要的就是这个人的版本（哪怕它本身是翻唱）
-    query_compact = re.sub(r"\s+", "", normalized_query)
-    if not is_cover_version(normalized_query):
-        clean_versions = []
-        for candidate in playable:
-            if is_cover_version(candidate.name, candidate.alias):
-                if normalized_artist and normalized_artist in normalize_text(candidate.artists):
-                    clean_versions.append(candidate)  # 用户点名了这个人，保留
-                    continue
-                stats.excluded += 1
+        # 硬条件：点名的歌手必须对上
+        if normalized_artist and normalized_artist not in artist_norm:
+            continue
+
+        # 硬条件：点名的版本词必须出现在候选里
+        if user_versions and not any(word in name_norm for word in user_versions):
+            continue
+
+        # 标题分
+        if normalized_query == normalize_text(candidate.name):
+            score = 100.0
+        elif stripped_norm == normalized_query:
+            score = 88.0
+        elif normalized_query in normalize_text(candidate.name):
+            score = 70.0
+        else:
+            score = _overlap_score(stripped_norm or name_norm, normalized_query)
+            if score < 55.0:
                 continue
-            clean_versions.append(candidate)
-        if clean_versions:
-            playable = clean_versions
-        else:
-            # 全是翻唱：宁可不选，也不拿翻唱顶替原唱
-            stats.matched = 0
-            return None, "no_match", stats
 
-    # 2) 歌手只在明确给了的情况下过滤；没人命中就改当版本别名用，不因它判失败
-    if normalized_artist:
-        by_singer = [
-            candidate
-            for candidate in playable
-            if normalized_artist in normalize_text(candidate.artists)
-        ]
-        if by_singer:
-            playable = by_singer
-        else:
-            logger.info(
-                f"artist_filter_ignored | song={query} | artist={artist} | "
-                "没有任何候选的歌手包含它，改按别名里的版本词匹配"
-            )
-            by_alias = [
-                candidate
-                for candidate in playable
-                if normalized_artist in normalize_text(candidate.alias)
-            ]
-            if not by_alias:
-                stats.matched = 0
-                return None, "no_match", stats
-            playable = by_alias
+        if normalized_artist and normalized_artist in artist_norm:
+            score += 45.0
 
-    # 2.5) 标题和歌名完全一样的优先（原唱基本都是纯标题，翻唱爱加后缀）
-    exact = [c for c in playable if normalize_text(c.name) == normalized_query]
-    if exact:
-        playable = exact
+        if user_versions and any(word in name_norm for word in user_versions):
+            score += 25.0
 
-    # 3) 分档：完全相等 > 可解释的包含
-    matches: list[tuple[int, int, SongCandidate]] = []
-    for rank, candidate in enumerate(playable):
-        tier = _match_tier(candidate, normalized_query)
-        if not tier and normalized_artist and normalized_artist in normalize_text(candidate.artists):
-            # 用户点名了这个歌手：把版本后缀去掉再比一次，允许他的翻唱版本命中
-            stripped = SongCandidate(
-                id=candidate.id,
-                name=_strip_version_markers(candidate.name),
-                artists=candidate.artists,
-                duration_ms=candidate.duration_ms,
-                alias="",
-                source=candidate.source,
-            )
-            tier = _match_tier(stripped, normalized_query)
-        if tier:
-            matches.append((tier, rank, candidate))
-    if not matches:
-        status = "only_accompaniment" if stats.excluded else "no_match"
+        # 没点名歌手时，翻唱/改编优先淘汰；点名了就尊重用户
+        if not normalized_artist and is_cover_version(candidate.name, candidate.alias):
+            score -= 45.0
+
+        duration = candidate.duration_ms or 0
+        if 0 < duration < 60000:
+            score -= 40.0
+        elif duration >= 120000:
+            score += 3.0
+
+        scored.append((score, index, candidate))
+
+    stats.excluded = excluded
+    if not scored:
+        status = "only_accompaniment" if excluded else "no_match"
         return None, status, stats
 
-    best_tier = max(item[0] for item in matches)
-    top = [item for item in matches if item[0] == best_tier]
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    if logger.isEnabledFor(10):  # DEBUG：把前三名的分数打出来，便于排「为什么选了这条」
+        top = " | ".join(
+            "%.0f:%s-%s" % (score, cand.name, cand.artists or "?")
+            for score, _i, cand in scored[:3]
+        )
+        logger.debug(f"song_match | query={query} | artist={artist or '-'} | top={top}")
+    best_score, _index, best = scored[0]
+    if best_score < 50.0:
+        stats.matched = 0
+        return None, "no_match", stats
 
-    # 4) 同档取舍：剔除明显是片段的（不足同档最长 90%），再按搜索顺序
-    longest = max(item[2].duration_ms for item in top)
-    if longest > 0:
-        kept = [
-            item
-            for item in top
-            if item[2].duration_ms <= 0 or item[2].duration_ms >= longest * 0.9
-        ]
-        if kept:
-            top = kept
-    top.sort(key=lambda item: item[1])
     stats.matched = 1
-    return top[0][2], "ok", stats
+    return best, "ok", stats
+
+
+def _overlap_score(candidate_text: str, query_text: str) -> float:
+    """按词重合度算分：查询词几乎都在候选里才给高分。"""
+    if not candidate_text or not query_text:
+        return 0.0
+    candidate_chars = set(candidate_text)
+    query_chars = set(query_text)
+    if not query_chars:
+        return 0.0
+    coverage = len(query_chars & candidate_chars) / len(query_chars)
+    if coverage < 0.8:
+        return 0.0
+    return 55.0 * coverage
 
 
 def pick_best_song_dict(

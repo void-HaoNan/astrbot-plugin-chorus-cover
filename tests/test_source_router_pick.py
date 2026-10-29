@@ -82,3 +82,31 @@ def test_original_wins_even_without_artist_hint():
     assert status == "ok"
     assert picked is not None
     assert picked.artists.startswith("DAOKO")
+
+def test_preview_clip_loses_to_full_track():
+    songs = [
+        candidate(1, "晴天", "周杰伦", duration=30000),   # 30 秒试听
+        candidate(2, "晴天", "周杰伦", duration=269000),  # 完整版
+    ]
+    picked, status, _stats = pick_best_song(songs, "晴天", "周杰伦")
+    assert status == "ok"
+    assert picked is not None
+    assert picked.duration_ms == 269000
+
+
+def test_instrumental_only_is_reported():
+    songs = [candidate(1, "晴天 (伴奏)", "周杰伦")]
+    picked, status, _stats = pick_best_song(songs, "晴天", "周杰伦")
+    assert picked is None
+    assert status == "only_accompaniment"
+
+
+def test_explicit_version_requires_that_version():
+    songs = [
+        candidate(1, "晴天", "周杰伦"),
+        candidate(2, "晴天 (Live)", "周杰伦"),
+    ]
+    picked, status, _stats = pick_best_song(songs, "晴天 Live", "周杰伦")
+    assert status == "ok"
+    assert picked is not None
+    assert "Live" in picked.name
