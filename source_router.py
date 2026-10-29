@@ -159,6 +159,41 @@ def is_accompaniment(*texts: Any) -> bool:
     return bool(re.search(r"(?<![a-z])inst(?![a-z])", joined.casefold()))
 
 
+_COVER_VERSION_WORDS = (
+    "翻唱",
+    "cover",
+    "深情版",
+    "女声版",
+    "男声版",
+    "童声版",
+    "钢琴版",
+    "吉他版",
+    "dj版",
+    "remix",
+    "慢速",
+    "加速",
+    "降调",
+    "升调",
+    "片段",
+    "剪辑",
+    "8d",
+    "抖音",
+    "翻自",
+    "原唱",
+)
+
+
+def is_cover_version(*texts: Any) -> bool:
+    """标题/别名是否带「翻唱或改编版本」标记。
+
+    ``原唱`` 也算：网易云上大量 ``晴天 (原唱 周杰伦)`` 是别人翻唱的，
+    标题里写「原唱」只是标注原唱是谁，本身不是原唱。
+    """
+    joined = "".join(str(text or "") for text in texts)
+    compact = re.sub(r"\s+", "", joined.casefold())
+    return any(word in compact for word in _COVER_VERSION_WORDS)
+
+
 def _alias_text(value: Any) -> str:
     """把别名（字符串 / 列表）拼成一段可比较文本。"""
     if isinstance(value, str):
@@ -316,6 +351,22 @@ def pick_best_song(
     if not playable:
         return None, "only_accompaniment", stats
 
+    # 1.5) 用户没点名版本时，剔除翻唱/改编版本：标题里出现翻唱、深情版、原唱 xx 之类的一律不要
+    query_compact = re.sub(r"\s+", "", normalized_query)
+    if not is_cover_version(normalized_query):
+        clean_versions = []
+        for candidate in playable:
+            if is_cover_version(candidate.name, candidate.alias):
+                stats.excluded += 1
+                continue
+            clean_versions.append(candidate)
+        if clean_versions:
+            playable = clean_versions
+        else:
+            # 全是翻唱：宁可不选，也不拿翻唱顶替原唱
+            stats.matched = 0
+            return None, "no_match", stats
+
     # 2) 歌手只在明确给了的情况下过滤；没人命中就改当版本别名用，不因它判失败
     if normalized_artist:
         by_singer = [
@@ -339,6 +390,11 @@ def pick_best_song(
                 stats.matched = 0
                 return None, "no_match", stats
             playable = by_alias
+
+    # 2.5) 标题和歌名完全一样的优先（原唱基本都是纯标题，翻唱爱加后缀）
+    exact = [c for c in playable if normalize_text(c.name) == normalized_query]
+    if exact:
+        playable = exact
 
     # 3) 分档：完全相等 > 可解释的包含
     matches: list[tuple[int, int, SongCandidate]] = []

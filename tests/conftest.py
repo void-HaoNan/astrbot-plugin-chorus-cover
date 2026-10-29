@@ -11,3 +11,33 @@ if "astrbot" not in sys.modules:
     astrbot.api = api
     sys.modules["astrbot"] = astrbot
     sys.modules["astrbot.api"] = api
+
+# aiohttp 只在真正联网时才需要；纯逻辑测试装个占位模块即可
+try:  # pragma: no cover
+    import aiohttp  # noqa: F401
+except ImportError:  # pragma: no cover
+    aiohttp_stub = types.ModuleType("aiohttp")
+
+    class _ClientTimeout:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    class _ClientSession:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, *args, **kwargs):
+            raise RuntimeError("测试环境不联网")
+
+        async def post(self, *args, **kwargs):
+            raise RuntimeError("测试环境不联网")
+
+    aiohttp_stub.ClientTimeout = _ClientTimeout
+    aiohttp_stub.ClientSession = _ClientSession
+    sys.modules["aiohttp"] = aiohttp_stub
