@@ -4,11 +4,12 @@
 
 本项目的取歌与下载逻辑借用了 [astrbot_plugin_music](https://github.com/Zhalslar/astrbot_plugin_music) 的实现思路。
 
-- 版本：`0.11.1`
+- 版本：`0.19.3`
 - 作者：void-HaoNan
 - 仓库：<https://github.com/void-HaoNan/astrbot-plugin-chorus-cover>
 - **配套中间层（必需）**：[`chorus-mw`](https://github.com/void-HaoNan/chorus-mw) —— 本插件只负责找歌和发语音，切副歌、分离、移调、变声、混音都由它干；没有它插件连不上 `3333`，翻唱会直接失败
 - 许可：AGPL-3.0（见文末「许可与出处」）
+- **设置项清单**：[`SETTINGS.md`](SETTINGS.md) —— 每个设置由哪一行代码读取，防止「假设置」
 
 ---
 
