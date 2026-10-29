@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.19.5",
+    "0.19.6",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -3386,12 +3386,6 @@ class MusicPlugin(Star):
 
         result_path = None
         try:
-            await self.selection_ui.send_card(
-                event,
-                "🎙️ 本地音频翻唱",
-                f"🎵 正在用【{model_display}】处理您的音频，请稍候...",
-            )
-
             result_path, cache_hit = await self._predict_cover(
                 event=event,
                 song_name_src=audio_path,
@@ -3402,7 +3396,7 @@ class MusicPlugin(Star):
             if result_path and os.path.exists(result_path):
                 await self._send_cover_result(event, result_path, song_name=song_display_name, cache_hit=cache_hit)
 
-                result_msg = f"✅ 已成功使用 RVC 音色【{selected_model}】处理您的音频！"
+                result_msg = f"✅ 已用 RVC 音色【{selected_model}】唱完这段音频。"
                 if cache_hit:
                     result_msg = f"⚡ 命中缓存！{result_msg}"
                 if self.enable_config_report:
@@ -4757,7 +4751,7 @@ Args:
         shift_info = f" | 升降调: {int(actual_key_shift or 0):+d}"
         if inferred_key_shift is not None:
             shift_info += f" ({inference_source})"
-        return f"🎵 正在用【{actual_model_display}】(RVC) 处理您的音频{shift_info}... 请稍候，处理完成后会自动发送！"
+        return f"已提交本地音频：{os.path.basename(audio_path)}，音色 {actual_model_display}{shift_info}"
 
 
     # ==================== 方案A+B：任务状态查询与取消 ====================
