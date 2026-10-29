@@ -9,6 +9,7 @@
 - 仓库：<https://github.com/void-HaoNan/astrbot-plugin-chorus-cover>
 - **配套中间层（必需）**：[`chorus-mw`](https://github.com/void-HaoNan/chorus-mw) —— 本插件只负责找歌和发语音，切副歌、分离、移调、变声、混音都由它干；没有它插件连不上 `3333`，翻唱会直接失败
 - 许可：AGPL-3.0（见文末「许可与出处」）
+- **安全说明**：[`SECURITY.md`](SECURITY.md) —— 插件会碰哪些边界、安装脚本做什么、误报怎么核对
 - **设置项清单**：[`SETTINGS.md`](SETTINGS.md) —— 每个设置由哪一行代码读取，防止「假设置」
 
 ---

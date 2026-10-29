@@ -2,7 +2,7 @@
   chorus-cover 一键安装器（0.13.2）
   --------------------------------
   双击 install.bat 运行；也可以手动：
-    powershell -ExecutionPolicy Bypass -File scripts\installer.ps1
+    powershell -ExecutionPolicy RemoteSigned -File scripts\installer.ps1
 
   它做这些事（每一步都会打印结果，不会静默改系统）：
     1. 找到 AstrBot 数据目录
@@ -133,7 +133,6 @@ function Ensure-Chorus([string]$Root) {
     $tag = 'v0.9.1'
     $urls = @(
         ('https://codeload.github.com/void-HaoNan/chorus-mw/zip/refs/tags/{0}' -f $tag),
-        ('https://ghfast.top/https://github.com/void-HaoNan/chorus-mw/archive/refs/tags/{0}.zip' -f $tag),
         'https://codeload.github.com/void-HaoNan/chorus-mw/zip/refs/heads/main'
     )
     $ok = $false
@@ -176,8 +175,7 @@ function Ensure-Rubberband([string]$Chorus) {
     New-Item -ItemType Directory -Force -Path $bin | Out-Null
     $zip = Join-Path $work 'rubberband.zip'
     $urls = @(
-        'https://breakfastquay.com/files/releases/rubberband-4.0.0-gpl-executable-windows.zip',
-        'https://ghfast.top/https://breakfastquay.com/files/releases/rubberband-4.0.0-gpl-executable-windows.zip'
+        'https://breakfastquay.com/files/releases/rubberband-4.0.0-gpl-executable-windows.zip'
     )
     foreach ($url in $urls) {
         try {
@@ -314,7 +312,7 @@ if (Test-Port 3333) {
     $env:no_proxy = $env:NO_PROXY
     $starter = Join-Path $chorus 'scripts\start.ps1'
     if (Test-Path $starter) {
-        Start-Process powershell -ArgumentList '-ExecutionPolicy', 'Bypass', '-File', $starter -WindowStyle Hidden
+        Start-Process powershell -ArgumentList '-ExecutionPolicy', 'RemoteSigned', '-File', $starter
     } else {
         Say '     中间层里没有 scripts\start.ps1，手动跑 python app.py 也行。' 'Yellow'
     }

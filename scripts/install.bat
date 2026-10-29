@@ -5,6 +5,6 @@ cd /d "%~dp0.."
 echo.
 echo  正在打开安装器，请不要关这个窗口...
 echo.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0installer.ps1" %*
+powershell -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0installer.ps1" %*
 echo.
 pause
