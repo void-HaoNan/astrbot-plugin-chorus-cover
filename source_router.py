@@ -290,6 +290,26 @@ def _candidate_from_song(song: Any, source: str) -> Optional[SongCandidate]:
     )
 
 
+_ARTIST_SPLIT_RE = re.compile(r"[、/&,，;；]|\bfeat\.?\b|\bx\b", re.IGNORECASE)
+
+
+def _artist_matches(candidate_artists: str, wanted: str) -> bool:
+    """歌手是否命中：按分隔符切开逐个比，标点保留，避免「周杰伦.」冒充「周杰伦」。"""
+    if not wanted:
+        return False
+    wanted_text = re.sub(r"\s+", "", str(wanted)).casefold()
+    for part in _ARTIST_SPLIT_RE.split(str(candidate_artists or "")):
+        text = re.sub(r"\s+", "", part).casefold()
+        if not text:
+            continue
+        if text == wanted_text:
+            return True
+        # 「G.E.M.邓紫棋」这类带前缀/后缀的写法：只要包含且长度差不大就算同一人
+        if wanted_text in text and len(text) - len(wanted_text) <= 8:
+            return True
+    return False
+
+
 def _strip_version_markers(name: Any) -> str:
     """把标题里的版本后缀去掉：「小幸运 (翻唱)」→「小幸运」。"""
     text = str(name or "")
@@ -374,31 +394,43 @@ def pick_best_song(
             excluded += 1
             continue
 
-        # 硬条件：点名的歌手必须对上
-        if normalized_artist and normalized_artist not in artist_norm:
+        # 硬条件：点名的歌手必须对上（逐段精确比，标点也算数）
+        if normalized_artist and not _artist_matches(candidate.artists, artist):
             continue
 
         # 硬条件：点名的版本词必须出现在候选里
         if user_versions and not any(word in name_norm for word in user_versions):
             continue
 
-        # 标题分
-        if normalized_query == normalize_text(candidate.name):
+        # 标题分：只认「完全一致 / 去掉版本后缀一致 / 歌名是标题的一部分」
+        title_norm = normalize_text(candidate.name)
+        if normalized_query == title_norm:
             score = 100.0
         elif stripped_norm == normalized_query:
             score = 88.0
-        elif normalized_query in normalize_text(candidate.name):
+        elif normalized_query in title_norm and len(title_norm) - len(normalized_query) <= 12:
             score = 70.0
+        elif _one_char_apart(title_norm, normalized_query):
+            score = 62.0
+        elif normalized_query in stripped_norm and len(stripped_norm) - len(normalized_query) <= 8:
+            score = 65.0
         else:
-            score = _overlap_score(stripped_norm or name_norm, normalized_query)
-            if score < 55.0:
-                continue
+            continue
 
-        if normalized_artist and normalized_artist in artist_norm:
+        if normalized_artist and _artist_matches(candidate.artists, artist):
             score += 45.0
 
         if user_versions and any(word in name_norm for word in user_versions):
             score += 25.0
+
+        # 现场版/DJ版：用户没点名就不要（原曲优先，避免拿到 live 或 remix）
+        live_dj_remix = (
+            re.search(r"(?<![a-z])(live|dj|remix|inst)", name_norm)
+            or re.search(r"[（(\[]\s*(dj|remix)", candidate.name, re.IGNORECASE)
+            or any(word in candidate.name for word in ("现场", "演唱会", "音乐会", "翻唱", "翻自"))
+        )
+        if live_dj_remix and not any(word in user_versions for word in ("live", "dj", "remix")):
+            score -= 30.0
 
         # 没点名歌手时，翻唱/改编优先淘汰；点名了就尊重用户
         if not normalized_artist and is_cover_version(candidate.name, candidate.alias):
@@ -431,6 +463,14 @@ def pick_best_song(
 
     stats.matched = 1
     return best, "ok", stats
+
+
+def _one_char_apart(left: str, right: str) -> bool:
+    """只差一个字也算同一首（异体字：千千阙歌 / 千千阕歌）。"""
+    if len(left) != len(right) or len(left) < 3:
+        return False
+    diff = sum(1 for a, b in zip(left, right) if a != b)
+    return diff <= 1
 
 
 def _overlap_score(candidate_text: str, query_text: str) -> float:
