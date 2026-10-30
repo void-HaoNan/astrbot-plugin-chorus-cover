@@ -1,5 +1,10 @@
 # 更新日志
 
+## 0.19.10
+
+- 文档：README 顶部新增「让 DSH / AI 全自动安装」入口，给出可直接复制的安装指令，指向 INSTALL_AGENT.md。
+- 文档：新增「更新」章节，说明插件市场更新只覆盖插件代码，中间层 chorus-mw 需要单独更新，并给出更新指令和自查方式（`/环境自检`、`install.bat -CheckOnly`）。
+
 本文件记录 **astrbot_plugin_chorus_cover**（副歌翻唱 · 自维护分支）的变更。
 上游 `sdfsfsk/matsuko_cover` 的历史日志请见上游仓库，此处只记本分支的差异。
 

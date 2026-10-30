@@ -4,13 +4,43 @@
 
 本项目的取歌与下载逻辑借用了 [astrbot_plugin_music](https://github.com/Zhalslar/astrbot_plugin_music) 的实现思路。
 
-- 版本：`0.19.3`
+- 版本：`0.19.10`
 - 作者：void-HaoNan
 - 仓库：<https://github.com/void-HaoNan/astrbot-plugin-chorus-cover>
 - **配套中间层（必需）**：[`chorus-mw`](https://github.com/void-HaoNan/chorus-mw) —— 本插件只负责找歌和发语音，切副歌、分离、移调、变声、混音都由它干；没有它插件连不上 `3333`，翻唱会直接失败
 - 许可：AGPL-3.0（见文末「许可与出处」）
 - **安全说明**：[`SECURITY.md`](SECURITY.md) —— 插件会碰哪些边界、安装脚本做什么、误报怎么核对
 - **设置项清单**：[`SETTINGS.md`](SETTINGS.md) —— 每个设置由哪一行代码读取，防止「假设置」
+
+---
+
+## 推荐：让 DSH / AI 全自动安装
+
+手工装这一套要碰 AstrBot、RVC 整合包、中间层、模型目录、Python 依赖五件事，人很容易漏。推荐把下面这句话直接交给 DSH（或任何能执行命令的 AI 助手）：
+
+```
+帮我安装并配置 astrbot_plugin_chorus_cover：
+插件仓库 https://github.com/void-HaoNan/astrbot-plugin-chorus-cover
+中间层仓库 https://github.com/void-HaoNan/chorus-mw
+先读仓库里的 INSTALL_AGENT.md，按里面的检查项一步步做，装完在群里发 /环境自检，把结果贴给我。
+```
+
+它会照 `INSTALL_AGENT.md` 里的顺序检查：AstrBot 版本、插件目录、中间层 3333、RVC 整合包路径、ffmpeg、取歌服务、音色目录，缺哪步补哪步，最后用 `/环境自检` 给出结论。
+
+## 更新：插件市场点更新，不等于全部更新
+
+插件市场点「更新」只会换掉**插件本身的代码**（`astrbot_plugin_chorus_cover`）。配套的中间层 [`chorus-mw`](https://github.com/void-HaoNan/chorus-mw) 和 RVC 整合包不在插件市场里，不会跟着变。
+
+所以每次插件大版本更新后，建议把下面这句丢给 DSH：
+
+```
+把 chorus-mw 更新到最新版：https://github.com/void-HaoNan/chorus-mw
+拉完依赖、重启中间层，然后在群里发 /环境自检，把结果贴给我。
+```
+
+判断要不要更新中间层的简单办法：插件更新日志里出现「需要中间层 x.y.z 起」的说明时，就必须更。
+
+更新完一定跑一次自查：群里发 `/环境自检`（管理员），或者双击 `scripts\install.bat -CheckOnly`，它会报后端、模型、运行时、ffmpeg、音色目录、取歌服务逐项状态。
 
 ---
 
