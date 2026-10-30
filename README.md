@@ -1,13 +1,13 @@
 # astrbot_plugin_chorus_cover · RVC 副歌翻唱
 
-给 [AstrBot](https://github.com/AstrBotDevs/AstrBot) 用的 **RVC 翻唱插件**：说一句「翻唱《歌名》」，它自己去找歌、切成副歌（或整首）、交给 RVC 后端换声，完事把音频发回群聊。
+给 AstrBot：https://github.com/AstrBotDevs/AstrBot 用的 **RVC 翻唱插件**：说一句「翻唱《歌名》」，它自己去找歌、切成副歌（或整首）、交给 RVC 后端换声，完事把音频发回群聊。
 
-本项目的取歌与下载逻辑借用了 [astrbot_plugin_music](https://github.com/Zhalslar/astrbot_plugin_music) 的实现思路。
+本项目的取歌与下载逻辑借用了 astrbot_plugin_music：https://github.com/Zhalslar/astrbot_plugin_music 的实现思路。
 
-- 版本：`0.19.10`
+- 版本：`0.19.11`
 - 作者：void-HaoNan
 - 仓库：<https://github.com/void-HaoNan/astrbot-plugin-chorus-cover>
-- **配套中间层（必需）**：[`chorus-mw`](https://github.com/void-HaoNan/chorus-mw) —— 本插件只负责找歌和发语音，切副歌、分离、移调、变声、混音都由它干；没有它插件连不上 `3333`，翻唱会直接失败
+- **配套中间层（必需）**：`chorus-mw`：https://github.com/void-HaoNan/chorus-mw —— 本插件只负责找歌和发语音，切副歌、分离、移调、变声、混音都由它干；没有它插件连不上 `3333`，翻唱会直接失败
 - 许可：AGPL-3.0（见文末「许可与出处」）
 - **安全说明**：[`SECURITY.md`](SECURITY.md) —— 插件会碰哪些边界、安装脚本做什么、误报怎么核对
 - **设置项清单**：[`SETTINGS.md`](SETTINGS.md) —— 每个设置由哪一行代码读取，防止「假设置」
@@ -29,7 +29,7 @@
 
 ## 更新：插件市场点更新，不等于全部更新
 
-插件市场点「更新」只会换掉**插件本身的代码**（`astrbot_plugin_chorus_cover`）。配套的中间层 [`chorus-mw`](https://github.com/void-HaoNan/chorus-mw) 和 RVC 整合包不在插件市场里，不会跟着变。
+插件市场点「更新」只会换掉**插件本身的代码**（`astrbot_plugin_chorus_cover`）。配套的中间层 `chorus-mw`：https://github.com/void-HaoNan/chorus-mw 和 RVC 整合包不在插件市场里，不会跟着变。
 
 所以每次插件大版本更新后，建议把下面这句丢给 DSH：
 
@@ -141,7 +141,7 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 
 ## 后端准备
 
-**后端就是姊妹仓库 [`chorus-mw`](https://github.com/void-HaoNan/chorus-mw)**（不是随便一个 Gradio 服务）。先把它跑起来：`http://127.0.0.1:3333/`，然后本插件才能工作。装法和启动脚本都在那个仓库的 README 里。
+**后端就是姊妹仓库 `chorus-mw`：https://github.com/void-HaoNan/chorus-mw**（不是随便一个 Gradio 服务）。先把它跑起来：`http://127.0.0.1:3333/`，然后本插件才能工作。装法和启动脚本都在那个仓库的 README 里。
 
 插件按 Gradio API 说话，默认端口 `3333`，需要后端提供：
 
@@ -155,7 +155,7 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 
 参数是**按名字探测**的：后端 `/convert` 里没有 `render_mode` 就整组不传，没有 MSST 参数就沿用后端配置，没有 0.8.0 新增的 `rms_mix_rate` / `protect` / `inst_volume_db` / `vocal_volume_db` 也不传，不会因为多传参数报错。
 
-本仓库配套的中间层是 [`chorus-mw`](https://github.com/void-HaoNan/chorus-mw)：它自己拉起 RVC 整合包、切副歌、分离、移调、混音，插件只要给它一个音频路径。
+本仓库配套的中间层是 `chorus-mw`：https://github.com/void-HaoNan/chorus-mw：它自己拉起 RVC 整合包、切副歌、分离、移调、混音，插件只要给它一个音频路径。
 
 > 注意：哪些参数真正生效由后端决定。`chorus-mw` **0.8.0 起**会真的使用 `f0_method`、`index_rate`、`rms_mix_rate`、`protect`、`inst_volume_db`、`vocal_volume_db`（传进 RVC 推理和混音），日志里每次请求打一行 `params ...` 可核对；`filter_radius`、混响/延迟、UVR5、MSST 那几组虽然还在 `/convert` 形参里，但中间层不消费，0.10.1 已从设置页删除。
 
@@ -446,6 +446,6 @@ RVC 只扫 `assets\weights` 这一层，**不认子目录**。想整理成 `中�
 ## 许可与出处
 
 - 本插件以 **AGPL-3.0** 发布，`LICENSE` 保持上游原样。
-- 取歌与下载逻辑借用了点歌插件 [astrbot_plugin_music](https://github.com/Zhalslar/astrbot_plugin_music)（作者 Zhalslar）的实现思路。
-- 本分支最初基于 [sdfsfsk/matsuko_cover](https://github.com/sdfsfsk/matsuko_cover) v2.13.0（AGPL-3.0）改写，来源与修改声明见 [NOTICE.md](NOTICE.md)。
+- 取歌与下载逻辑借用了点歌插件 astrbot_plugin_music：https://github.com/Zhalslar/astrbot_plugin_music（作者 Zhalslar）的实现思路。
+- 本分支最初基于 sdfsfsk/matsuko_cover：https://github.com/sdfsfsk/matsuko_cover v2.13.0（AGPL-3.0）改写，来源与修改声明见 [NOTICE.md](NOTICE.md)。
 - 上游代码版权归原作者所有；本分支新增与修改的部分同样以 AGPL-3.0 发布。
