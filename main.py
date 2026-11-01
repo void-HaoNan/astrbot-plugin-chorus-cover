@@ -291,6 +291,8 @@ class MusicPlugin(Star):
         self.inst_volume_db = _bounded_float(config, "inst_volume_db", -6.0, -20.0, 0.0)
         self.vocal_volume_db = _bounded_float(config, "vocal_volume_db", 0.0, -12.0, 12.0)
         self.shift_accompaniment = config.get("shift_accompaniment", True)
+        # 清唱模式：只出变声后的人声，不混伴奏（中间层 0.9.5 起支持）
+        self.vocal_only = bool(config.get("vocal_only", False))
 
         # === 0.6.0 翻唱时长（只对 chorus-mw 这类支持 render_mode 的后端生效）===
         raw_render_mode = str(config.get("render_mode", "chorus") or "chorus").strip().lower()
@@ -1464,6 +1466,9 @@ class MusicPlugin(Star):
                         "当前中间层不支持 chorus_start（需要 ≥0.9.4），本次仍按自动挑段处理"
                     )
             mix_kwargs = self._get_mix_kwargs(client)
+            # 清唱模式：/info 的参数表里 vocal_only 排在最后一个，探测不到，
+            # 所以开启时直接带上；关着就不传，行为跟以前一致。
+            vocal_kwargs = {"vocal_only": True} if getattr(self, "vocal_only", False) else {}
             legacy_kwargs = {
                 "song_name_src": song_name_src,
                 "key_shift": int(key_shift or 0),
@@ -1477,14 +1482,22 @@ class MusicPlugin(Star):
                 # filter_radius / uvr5_* / msst_batch_size 等已从设置页删除，
                 # 它们只是 /convert 的形参占位，中间层不消费，不再提交。
                 **mix_kwargs,
+                **vocal_kwargs,
                 **msst_kwargs,
                 **render_kwargs,
                 **start_kwargs,
             }
+            # 清唱走单独端点（gradio 的 /convert 参数表会把最后一个布尔位吞掉），
+            # 端点各自有参数表，多传的键按表过滤掉再提交。
+            api_name = "/convert_vocal_only" if vocal_kwargs else "/convert"
+            if api_name != "/convert":
+                names = self._client_api_parameter_names(client, api_name)
+                if names:
+                    legacy_kwargs = {k: v for k, v in legacy_kwargs.items() if k in names}
             result, cache_hit = await self._async_predict(
                 client,
                 **legacy_kwargs,
-                api_name="/convert",
+                api_name=api_name,
                 timeout=self.inference_timeout,
                 event=event,
                 detect_cache_hit=True,
