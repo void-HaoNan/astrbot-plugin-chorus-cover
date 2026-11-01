@@ -48,6 +48,7 @@
 | `protect` | 保护清音与气声的程度（protect） | main.py:284 |
 | `inst_volume_db` | 伴奏音量（dB） | main.py:285 |
 | `vocal_volume_db` | 人声音量（dB） | main.py:286 |
+| `vocal_only` | 清唱模式：只出变声后人声，不混伴奏 | main.py:295 |
 | `enable_send_file` | 推理完成后同时以文件形式发送到群聊 | main.py:258 |
 | `enable_config_report` | 翻唱完成后发送配置信息报告 | main.py:259 |
 | `enable_auto_key_shift` | 启用自动升降调（根据原曲歌手与模型性别自动调整音调） | main.py:332 |
