@@ -1,16 +1,39 @@
-# astrbot_plugin_chorus_cover · RVC 副歌翻唱
+﻿# astrbot_plugin_chorus_cover · RVC 副歌翻唱
 
 给 AstrBot：https://github.com/AstrBotDevs/AstrBot 用的 **RVC 翻唱插件**：说一句「翻唱《歌名》」，它自己去找歌、切成副歌（或整首）、交给 RVC 后端换声，完事把音频发回群聊。
 
 本项目的取歌与下载逻辑借用了 astrbot_plugin_music：https://github.com/Zhalslar/astrbot_plugin_music 的实现思路。
 
-- 版本：`0.19.11`
+- 版本：`0.19.12`
 - 作者：void-HaoNan
 - 仓库：<https://github.com/void-HaoNan/astrbot-plugin-chorus-cover>
 - **配套中间层（必需）**：`chorus-mw`：https://github.com/void-HaoNan/chorus-mw —— 本插件只负责找歌和发语音，切副歌、分离、移调、变声、混音都由它干；没有它插件连不上 `3333`，翻唱会直接失败
 - 许可：AGPL-3.0（见文末「许可与出处」）
 - **安全说明**：[`SECURITY.md`](SECURITY.md) —— 插件会碰哪些边界、安装脚本做什么、误报怎么核对
 - **设置项清单**：[`SETTINGS.md`](SETTINGS.md) —— 每个设置由哪一行代码读取，防止「假设置」
+
+---
+
+## ⚠️ 开工前：这几项必须配，不配就用不了
+
+> 装完先在群里发 `/环境自检`，下面四项它会逐条告诉你缺哪条。
+
+1. **中间层 chorus-mw 必须跑在 `http://127.0.0.1:3333`**
+   没有它，找歌能成功、翻唱一定失败。装法见 [`INSTALL.md`](INSTALL.md)，或直接用 `scripts\install.bat`。
+
+2. **RVC 整合包 + 音色模型目录（设置里必填）**
+   - `RVC 目录`：里面有 `runtime` 和 `assets` 的整合包路径
+   - `音色模型目录`：`.pth` / `.index` 所在目录
+   路径填错的表现是「翻唱跑一半报错」或「找不到模型」。
+
+3. **取歌必须能访问外网**（这是「下载不了音乐 / 服务器没连接」的唯一来源）
+   - 主路 meting：`https://api.qijieya.cn/meting/`（默认值，一般不用改）
+   - 搜歌：`https://music.163.com/api/search/get/web`
+   两条都连不上就会报 **「取歌服务连不上」**。公司网 / 校园网 / 海外机器常见，解决办法：换一个可用的 meting 镜像，填到设置项 `netease_meting_base`。
+   报 **「搜不到这首歌」** 说明搜歌那一条不通（被防火墙或代理拦了）。
+
+4. **网易云 cookie（可选，但强烈建议）**
+   不配也能搜歌；不配时一部分版权歌拿不到直链，会退到翻唱版或失败。填 `netease_cookie` 的 `MUSIC_U` 值。
 
 ---
 
@@ -274,7 +297,11 @@ RVC 只扫 `assets\weights` 这一层，**不认子目录**。想整理成 `中�
 | `netease_meting_base` | `https://api.qijieya.cn/meting/` | meting 取直链服务（主路） |
 | `netease_api_base` | `https://zm.wwoyun.cn` | NodeJS 网易云 API（备用路），留空则只用 meting |
 | `netease_api_token` | 空 | 备用路需要鉴权时填令牌 |
-| `netease_cookie` | 空 | 网易云 `MUSIC_U`，会员歌/高音质要用 |
+| `netease_cookie` | 空 | 网易云 `MUSIC_U`，会员歌/高音质要用；不配也能搜歌，但部分版权歌拿不到直链 |
+
+> **「下载不了音乐」怎么查**：启动日志里有一行 `[取歌] meting 主路：…`，先用它核对地址。
+> 报「取歌服务连不上（地址）」= 这台机器访问不了那个 meting 站点，换一个镜像填 `netease_meting_base`；
+> 报「搜不到这首歌」= 访问不了 `music.163.com`，检查代理/防火墙。
 | `alert_admin_on_cookie_expired` | `true` | cookie 连续失效时私聊管理员 |
 | `cookie_alert_interval_hours` | `6` | 同一失效状态的提醒去重窗口（小时） |
 

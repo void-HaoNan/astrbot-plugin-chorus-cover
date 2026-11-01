@@ -50,7 +50,9 @@ from astrbot.api import logger
 # 接口常量（与点歌插件保持一致）
 # ---------------------------------------------------------------------------
 #: 搜歌接口：POST，参数 s / limit / type=1 / offset=0，带 appver=2.0.2 这个 cookie
-SEARCH_URL = "http://music.163.com/api/search/get/web"
+# 以前是 http://，公司网/校园网/部分运营商会拦明文 HTTP，搜歌一步就失败，
+# 表现成「搜不到这首歌 / 服务器没连接」。同一个接口 HTTPS 可用。
+SEARCH_URL = "https://music.163.com/api/search/get/web"
 SEARCH_COOKIES = {"appver": "2.0.2"}
 #: 取直链的主路：点歌插件 netease 平台用的 meting 服务
 DEFAULT_METING_BASE = "https://api.qijieya.cn/meting/"
@@ -98,7 +100,7 @@ REASON_HTTP = "接口返回 HTTP {status}"
 REASON_HTTP_DOWNLOAD = "下载地址返回 HTTP {status}"
 REASON_DL_NO_TIME = "下载完量不到时长，无法确认是整首"
 REASON_DL_TOO_SHORT = "下载到的不是整首（时长 {seconds} 秒）"
-REASON_API_UNREACHABLE = "取歌服务连不上"
+REASON_API_UNREACHABLE = "取歌服务连不上，检查网络或换一个 meting 地址"
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +418,12 @@ class NeteaseFetcher:
             data={"s": keyword, "limit": limit, "type": 1, "offset": 0},
             cookies=SEARCH_COOKIES,
         )
+        if result is None:
+            logger.error(
+                f"[取歌] 搜歌接口连不上：{SEARCH_URL}（关键词「{keyword}」，"
+                "检查本机能不能访问 music.163.com / 有没有被代理或防火墙拦）"
+            )
+            return []
         if (
             not isinstance(result, dict)
             or not isinstance(result.get("result"), dict)
@@ -481,6 +489,10 @@ class NeteaseFetcher:
         """主路：点歌插件 netease 平台的 meting 接口。"""
         url = f"{self.meting_base}?type=song&id={song_id}"
         payload = await self._request(url)
+        if payload is None:
+            # 请求本身就没成功（DNS/超时/证书/被墙），别再说成「没拿到链接」害人查错方向
+            logger.error(f"[取歌] meting 服务连不上：{self.meting_base}（id={song_id}）")
+            return "", f"{REASON_API_UNREACHABLE}（{self.meting_base}）"
         if isinstance(payload, dict):
             payload = [payload]
         if not isinstance(payload, list) or not payload:

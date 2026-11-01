@@ -224,6 +224,12 @@ class MusicPlugin(Star):
             f"[音源路由] 顺序：{source_router.describe_order(self.source_order)}"
             "（改插件配置 source_order 可调整顺序/停用某个源）"
         )
+        # 用户反馈「下载不了 / 服务器没连接」时先看这一行：地址对不对、备用路配没配
+        logger.info(
+            f"[取歌] meting 主路：{self.netease_meting_base}"
+            f"；备用 NodeJS：{self.netease_api_base or '未配置'}"
+            f"；cookie：{'有' if self.netease_cookie else '无'}"
+        )
         self.alert_admin_on_cookie_expired = bool(
             config.get("alert_admin_on_cookie_expired", True)
         )
