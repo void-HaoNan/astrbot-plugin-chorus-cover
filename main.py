@@ -3543,6 +3543,19 @@ Returns: 任务描述；异步，立刻返回，完成后自动发音频。'''
                 model_display = m["display"]
                 break
 
+        # 先确认真有这首歌再排队：以前是直接排，查不到也回「排在第 N 个」，
+        # 用户就一直等，最后等来个失败。查不到就当场说没找到。
+        try:
+            candidates, reason = await asyncio.wait_for(
+                self.song_router.search_candidates(
+                    (song_name + " " + artist_name).strip() if artist_name else song_name, limit=3),
+                timeout=self.music_api_timeout,
+            )
+            if not candidates:
+                return f"没找到《{song_name}》这首歌（{reason}），换首别的吧。"
+        except Exception as error:
+            logger.warning(f"点歌前查歌出错，按原流程继续: {error}")
+
         if not self._register_active_task(event, song_name, model_display):
             position = self._queue_cover_request(
                 event, song_name, model_index, key_shift,
