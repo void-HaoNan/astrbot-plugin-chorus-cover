@@ -74,4 +74,4 @@
 | `local_audio_default_model` | 本地音频自动触发默认模型 | main.py:364 |
 | `local_audio_default_shift` | 本地音频自动触发默认音调 | main.py:365 |
 
-共 67 项。
+共 68 项。
