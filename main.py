@@ -139,7 +139,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.19.15",
+    "0.19.16",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -2343,7 +2343,13 @@ class MusicPlugin(Star):
 
     @staticmethod
     def _client_api_parameter_names(client, api_name: str) -> Optional[Set[str]]:
-        """Return keyword parameter names advertised for one Gradio endpoint."""
+        """Return keyword parameter names advertised for one Gradio endpoint.
+
+        gradio_client 各版本把同一份参数表放在 ``endpoint.parameters_info`` 里，
+        元素既可能是 dict（2.x），也可能是带同名字段的 ParameterInfo 对象。
+        只认 dict 的写法会在库升级后静默返回空集合：render_mode、混音参数、
+        chorus_start 全都不传，而且没有任何报错，很难查。这里两种都认。
+        """
         endpoints = getattr(client, "endpoints", None)
         if not endpoints:
             return None
@@ -2356,11 +2362,15 @@ class MusicPlugin(Star):
             parameters = getattr(endpoint, "parameters_info", None)
             if parameters is None:
                 return None
-            return {
-                str(item["parameter_name"])
-                for item in parameters
-                if isinstance(item, dict) and item.get("parameter_name")
-            }
+            names: Set[str] = set()
+            for item in parameters:
+                if isinstance(item, dict):
+                    value = item.get("parameter_name")
+                else:
+                    value = getattr(item, "parameter_name", None)
+                if value:
+                    names.add(str(value))
+            return names
         return None
 
     def _get_render_kwargs(self, client) -> Dict[str, Any]:

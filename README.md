@@ -4,7 +4,7 @@
 
 本项目的取歌与下载逻辑借用了 astrbot_plugin_music：https://github.com/Zhalslar/astrbot_plugin_music 的实现思路。
 
-- 版本：`0.19.15`
+- 版本：`0.19.16`
 - 作者：void-HaoNan
 - 仓库：<https://github.com/void-HaoNan/astrbot-plugin-chorus-cover>
 - **配套中间层（必需）**：`chorus-mw` ≥ `0.9.14`：https://github.com/void-HaoNan/chorus-mw —— 本插件只负责找歌和发语音，切副歌、分离、移调、变声、混音都由它干；没有它插件连不上 `3333`，翻唱会直接失败
@@ -522,6 +522,7 @@ RVC 只扫 `assets\weights` 这一层，**不认子目录**。想整理成 `中�
 
 只记最近几条，完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
+- **v0.19.16**：修一键安装器下载中间层的两个 404 地址（仓库没打 tag、默认分支是 `master`），脚本执行策略统一改 `Bypass`；后端参数探测兼容新版 gradio_client，避免升级后 `render_mode` 等参数静默不传。
 - **v0.19.15**：配合中间层 0.9.14 的串行化——后端两个入口共用一把全局锁，插件侧不再自己加等待；中间层低于 0.9.14 时行为不变。
 - **v0.19.13**：新增清唱开关 `vocal_only`（走中间层 `/convert_vocal_only`，只出人声）；新增 `media_info` 封面/歌词统一接口（四平台一套返回格式，给外部调用方用）；点歌前先查歌，查不到直接说「没找到」，不再排进队列空等。
 - **v0.19.12**：搜歌接口改 HTTPS；取歌连不上时给出真实原因和具体地址；启动日志打印 meting 主路 / 备用路 / cookie 状态；文档前置「开工前必配」。

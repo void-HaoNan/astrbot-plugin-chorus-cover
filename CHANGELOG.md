@@ -1,5 +1,22 @@
 # 更新日志
 
+## 0.19.16（2026-11-08）
+
+**修一键安装器「下不到中间层」，顺手把参数探测和脚本执行策略收紧。**
+
+- 修：`scripts/installer.ps1` 里下载 chorus-mw 的两个地址**都是 404** ——
+  `refs/tags/v0.9.1`（这个仓库从没打过 tag）和 `refs/heads/main`（默认分支是 `master`）。
+  表现是新机器上「没找到 chorus-mw → 准备从 GitHub 下载 → 下载失败」，只能手动解压。
+  现在直接下 `refs/heads/master`，`main` 只作为以后改名的兜底，下完把实际用的地址打出来。
+- 修：`install.bat` 与 `installer.ps1` 启动自身和 `scripts\start.ps1` 时用的是 `RemoteSigned`。
+  从网上下载（或用市场安装）的脚本带「来自 Internet」标记时会被执行策略拦下；
+  统一改成 `Bypass`，与 `INSTALL.md` 里写给用户的手动命令一致。
+- 加固：`_client_api_parameter_names` 兼容 gradio_client 把参数表元素换成对象的版本。
+  旧写法只认 dict，库一升级就会静默返回空集合——`render_mode`、`rms_mix_rate`、`protect`、
+  `inst_volume_db`、`vocal_volume_db`、`chorus_start` 全都不传且不报错，只会表现为「设置不生效」。
+- 安装器横幅与脚本头注释版本号 0.13.2 → 0.19.16。
+- 版本号 0.19.15 → 0.19.16（设置项、命令、接口都没变，不用改配置）。
+
 ## 0.19.15（2026-11-03）
 
 **配合中间层 chorus-mw 0.9.14：翻唱任务串行化。**

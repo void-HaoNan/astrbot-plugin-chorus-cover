@@ -1,8 +1,8 @@
 ﻿<#
-  chorus-cover 一键安装器（0.13.2）
+  chorus-cover 一键安装器（0.19.16）
   --------------------------------
   双击 install.bat 运行；也可以手动：
-    powershell -ExecutionPolicy RemoteSigned -File scripts\installer.ps1
+    powershell -ExecutionPolicy Bypass -File scripts\installer.ps1
 
   它做这些事（每一步都会打印结果，不会静默改系统）：
     1. 找到 AstrBot 数据目录
@@ -129,10 +129,10 @@ function Ensure-Chorus([string]$Root) {
     Say '准备从 GitHub 下载 chorus-mw …' 'DarkGray'
     New-Item -ItemType Directory -Force -Path $work | Out-Null
     $zip = Join-Path $work 'chorus-mw.zip'
-    # 钉住验证过的版本；拿不到才退 main，并明确告警
-    $tag = 'v0.9.1'
+    # 这个仓库没有打 tag，默认分支是 master；main 只作为以后改名的兜底。
+    # 之前钉的 refs/tags/v0.9.1 和 refs/heads/main 都是 404，自动下载从来没成功过。
     $urls = @(
-        ('https://codeload.github.com/void-HaoNan/chorus-mw/zip/refs/tags/{0}' -f $tag),
+        'https://codeload.github.com/void-HaoNan/chorus-mw/zip/refs/heads/master',
         'https://codeload.github.com/void-HaoNan/chorus-mw/zip/refs/heads/main'
     )
     $ok = $false
@@ -148,9 +148,7 @@ function Ensure-Chorus([string]$Root) {
         Say '     下载失败：网络连不上 GitHub。你可以手动下载 chorus-mw 解压到上面那个目录再重跑本脚本。' 'Red'
         return ""
     }
-    if ($picked -notmatch [regex]::Escape($tag)) {
-        Say ('     注意：没拿到 {0}，这次装的是 main 分支，版本可能比文档新。' -f $tag) 'Yellow'
-    }
+    Say ("     已下载：{0}" -f $picked) 'DarkGray'
     try {
         Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
     } catch {
@@ -208,7 +206,7 @@ function Set-PluginBackend([string]$DataDir, [string]$Url) {
 }
 
 Say '============================================' 'Cyan'
-Say ' RVC 翻唱插件 · 一键安装器 0.13.2' 'Cyan'
+Say ' RVC 翻唱插件 · 一键安装器 0.19.16' 'Cyan'
 Say '============================================' 'Cyan'
 Say ''
 
@@ -312,7 +310,7 @@ if (Test-Port 3333) {
     $env:no_proxy = $env:NO_PROXY
     $starter = Join-Path $chorus 'scripts\start.ps1'
     if (Test-Path $starter) {
-        Start-Process powershell -ArgumentList '-ExecutionPolicy', 'RemoteSigned', '-File', $starter
+        Start-Process powershell -ArgumentList '-ExecutionPolicy', 'Bypass', '-File', $starter
     } else {
         Say '     中间层里没有 scripts\start.ps1，手动跑 python app.py 也行。' 'Yellow'
     }
