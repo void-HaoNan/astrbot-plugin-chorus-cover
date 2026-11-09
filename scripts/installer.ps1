@@ -46,15 +46,6 @@ function Test-Port([int]$Port) {
     return $null -ne (Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue | Select-Object -First 1)
 }
 
-function Wait-Port([int]$Port, [int]$Seconds = 120) {
-    $deadline = (Get-Date).AddSeconds($Seconds)
-    while ((Get-Date) -lt $deadline) {
-        if (Test-Port $Port) { return $true }
-        Start-Sleep -Seconds 2
-    }
-    return $false
-}
-
 function Find-RvcRoot {
     if ($RvcRoot -and (Test-Path (Join-Path $RvcRoot 'runtime\python.exe'))) { return (Resolve-Path $RvcRoot).Path }
     if ($env:CHORUS_RVC_ROOT -and (Test-Path (Join-Path $env:CHORUS_RVC_ROOT 'runtime\python.exe'))) {
