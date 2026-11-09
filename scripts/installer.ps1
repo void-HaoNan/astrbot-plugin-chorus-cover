@@ -1,5 +1,5 @@
 ﻿<#
-  chorus-cover 一键安装器（0.19.16）
+  chorus-cover 一键安装器（0.19.17）
   --------------------------------
   双击 install.bat 运行；也可以手动：
     powershell -ExecutionPolicy Bypass -File scripts\installer.ps1
@@ -10,8 +10,8 @@
     3. 找到或下载 chorus-mw 中间层
     4. 给中间层装依赖（libs_web / libs）
     5. 补齐 rubberband（升降调用）
-    6. 写插件配置里的后端地址
-    7. 启动中间层并等待 3333
+    6. 写插件配置：后端地址、中间层目录、RVC 目录、Python、自动托管
+    7. 试启动一次中间层确认依赖完整，然后停掉交给插件
     8. 打印接下来要做什么
 
   不会：改系统 PATH、装驱动、静默执行网上的脚本。
@@ -191,22 +191,27 @@ function Ensure-Rubberband([string]$Chorus) {
     return (Test-Path $exe)
 }
 
-function Set-PluginBackend([string]$DataDir, [string]$Url) {
+function Set-PluginBackend([string]$DataDir, [string]$Url, [string]$Chorus, [string]$Rvc, [string]$Python) {
     $configDir = Join-Path $DataDir 'config'
     $configPath = Join-Path $configDir 'astrbot_plugin_chorus_cover_config.json'
     if (-not (Test-Path $configPath)) {
-        Say '     插件还没生成配置文件，先启动一次 AstrBot 再来跑本脚本，或手动在设置页填后端地址。' 'Yellow'
+        Say '     插件还没生成配置文件，先启动一次 AstrBot 再来跑本脚本，或手动在设置页填。' 'Yellow'
         return $false
     }
     $raw = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8
     $json = $raw | ConvertFrom-Json
     $json.rvc_base_url = $Url
+    # 0.19.17：插件自己拉起中间层要这几项，安装器一次写全，用户不用再去设置页找
+    $json | Add-Member -NotePropertyName 'auto_middleware' -NotePropertyValue $true -Force
+    $json | Add-Member -NotePropertyName 'chorus_dir' -NotePropertyValue $Chorus -Force
+    $json | Add-Member -NotePropertyName 'rvc_root' -NotePropertyValue $Rvc -Force
+    $json | Add-Member -NotePropertyName 'chorus_python' -NotePropertyValue $Python -Force
     ($json | ConvertTo-Json -Depth 20) | Set-Content -LiteralPath $configPath -Encoding UTF8
     return $true
 }
 
 Say '============================================' 'Cyan'
-Say ' RVC 翻唱插件 · 一键安装器 0.19.16' 'Cyan'
+Say ' RVC 翻唱插件 · 一键安装器 0.19.17' 'Cyan'
 Say '============================================' 'Cyan'
 Say ''
 
@@ -290,19 +295,25 @@ if (Ensure-Rubberband $chorus) {
     Say '     没装上 rubberband：升降调会不可用，翻唱本身不受影响。' 'Yellow'
 }
 
-# 6) 写插件后端地址
+# 6) 写插件配置
 Say '[6/7] 写插件配置' 'White'
 $url = 'http://127.0.0.1:3333/'
-if (Set-PluginBackend $AstrBotData $url) {
-    Say ("     已把 rvc_base_url 设为 {0}" -f $url) 'Green'
+if (Set-PluginBackend $AstrBotData $url $chorus $root $python) {
+    Say ("     已写入 rvc_base_url / auto_middleware / chorus_dir / rvc_root / chorus_python") 'Green'
+    Say ("     chorus_dir = {0}" -f $chorus) 'DarkGray'
+    Say ("     rvc_root   = {0}" -f $root) 'DarkGray'
 } else {
-    Say '     这一步跳过，稍后在插件设置里把 RVC 后端填成 http://127.0.0.1:3333/' 'Yellow'
+    Say '     这一步跳过：先启动一次 AstrBot，再在插件设置里填这几项：' 'Yellow'
+    Say ("       RVC 后端 = {0}" -f $url) 'DarkGray'
+    Say ("       中间层目录 = {0}" -f $chorus) 'DarkGray'
+    Say ("       RVC 目录 = {0}" -f $root) 'DarkGray'
+    Say ("       跑中间层的 Python = {0}" -f $python) 'DarkGray'
 }
 
-# 7) 启动中间层
-Say '[7/7] 启动中间层' 'White'
+# 7) 试启动一次：确认依赖完整，然后停掉交给插件
+Say '[7/7] 试启动中间层（确认依赖完整，然后停掉）' 'White'
 if (Test-Port 3333) {
-    Say '     3333 已经在跑，跳过启动' 'Green'
+    Say '     3333 已经被占用（旧实例或插件已经在管），跳过试启动，不动它。' 'Yellow'
 } else {
     $env:CHORUS_RVC_ROOT = $root
     $env:CHORUS_PYTHON = $python
@@ -310,14 +321,21 @@ if (Test-Port 3333) {
     $env:no_proxy = $env:NO_PROXY
     $starter = Join-Path $chorus 'scripts\start.ps1'
     if (Test-Path $starter) {
-        Start-Process powershell -ArgumentList '-ExecutionPolicy', 'Bypass', '-File', $starter
+        & $starter 2>&1 | ForEach-Object { Say ("     " + $_) 'DarkGray' }
+        if (Test-Port 3333) {
+            Say '     能起来：依赖完整。现在停掉，重启 AstrBot 后由插件自动拉起。' 'Green'
+            & $starter -Stop 2>&1 | ForEach-Object { Say ("     " + $_) 'DarkGray' }
+            if (Test-Port 3333) {
+                Say '     没停干净：看上面输出，可能有别的守护在拉起它。' 'Yellow'
+            } else {
+                Say '     已停干净。' 'Green'
+            }
+        } else {
+            Say '     180 秒没起来：看中间层目录下 _work\mw.log / mw.err。' 'Red'
+            Say '     常见原因：Python 版本不对、依赖装到了别的 Python、RVC 路径错。' 'Yellow'
+        }
     } else {
         Say '     中间层里没有 scripts\start.ps1，手动跑 python app.py 也行。' 'Yellow'
-    }
-    if (Wait-Port 3333 180) {
-        Say '     3333 已就绪' 'Green'
-    } else {
-        Say '     180 秒还没起来，去看中间层目录下 _work\mw.log 的报错。' 'Yellow'
     }
 }
 
@@ -328,8 +346,12 @@ Say '============================================' 'Cyan'
 Say ' 安装流程结束' 'Cyan'
 Say '============================================' 'Cyan'
 Say '接下来：' 'White'
-Say '  1. 重启一次 AstrBot（让插件读到新的后端地址）'
-Say '  2. 在群里发 /环境自检 看还有没有红叉'
-Say '  3. 把音色模型 .pth 放进 RVC 的 assets\weights，发 /刷新rvc模型'
+Say '  1. 重启一次 AstrBot（让插件读到新配置）'
+Say '  2. 不用手动开中间层：插件会在 10~40 秒内自己拉起 3333'
+Say '  3. 在群里发 /环境自检，看到「中间层由本插件托管」就对了'
+Say '  4. 把音色模型 .pth 放进 RVC 的 assets\weights，发 /刷新rvc模型'
+Say ''
+Say '  如果以前开过 start_supervisor.ps1 或直播控制台的守护，先关掉它：' 'Yellow'
+Say '  两个管理者会互相拉起，插件的自动托管也关不干净。' 'Yellow'
 Say ''
 Read-Host '按回车关闭窗口'

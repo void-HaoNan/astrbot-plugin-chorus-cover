@@ -27,6 +27,7 @@ from . import netease_fetch
 from . import source_router
 from . import language_detect
 from . import model_library
+from . import middleware_lifecycle
 from .selection import CoverSelectionUI
 from .outbound import Outbound
 
@@ -139,7 +140,7 @@ class _OutboundTarget:
     "astrbot_plugin_chorus_cover",
     "void-HaoNan",
     "RVC 副歌翻唱：取歌走多音源，翻唱只走 RVC；对话出口统一走模型、失败结果结构化",
-    "0.19.16",
+    "0.19.17",
     "https://github.com/void-HaoNan/astrbot-plugin-chorus-cover",
 )
 class MusicPlugin(Star):
@@ -293,6 +294,16 @@ class MusicPlugin(Star):
         self.shift_accompaniment = config.get("shift_accompaniment", True)
         # 清唱模式：只出变声后的人声，不混伴奏（中间层 0.9.5 起支持）
         self.vocal_only = bool(config.get("vocal_only", False))
+
+        # === 0.19.17 中间层随 AstrBot 启停 ===
+        # 插件托管 3333：启动时连不上就拉起；发现是旧守护/手动拉起、又没有归属记录时接管
+        # （先停再起，保证带父进程看护）；插件停用时只关自己托管的那一个。
+        self.auto_middleware = bool(config.get("auto_middleware", True))
+        self.chorus_dir = str(config.get("chorus_dir", "") or "").strip()
+        self.rvc_root = str(config.get("rvc_root", "") or "").strip()
+        self.chorus_python = str(config.get("chorus_python", "") or "").strip()
+        self._middleware_task: Optional[asyncio.Task] = None
+        self._middleware_warned = False
 
         # === 0.6.0 翻唱时长（只对 chorus-mw 这类支持 render_mode 的后端生效）===
         raw_render_mode = str(config.get("render_mode", "chorus") or "chorus").strip().lower()
@@ -2861,27 +2872,264 @@ class MusicPlugin(Star):
         yield event.plain_result("\n".join(lines))
 
     def _find_chorus_dir(self, models_dir: str = "") -> str:
-        """推断中间层目录：环境变量优先，其次整合包的上两级、上三级。"""
-        root = ""
-        if models_dir:
-            root = os.path.dirname(os.path.dirname(os.path.abspath(models_dir)))
-        candidates: List[str] = []
-        if os.environ.get("CHORUS_DIR"):
-            candidates.append(os.environ["CHORUS_DIR"])
+        """推断中间层目录：配置优先，其次环境变量 CHORUS_DIR、RVC 整合包旁边。"""
+        return middleware_lifecycle.find_chorus_dir(self.chorus_dir, models_dir=models_dir)
+
+    # ==================== 中间层启停（0.19.17） ====================
+
+    def _middleware_marker(self) -> str:
+        """记录「这个中间层是本插件拉起的」，停止时靠它判断要不要关。"""
+        return middleware_lifecycle.marker_path(_plugin_data_dir())
+
+    def _middleware_env(self) -> Dict[str, str]:
+        """拉起中间层时给它补的环境：父进程看护 + RVC 路径 + 解释器。
+
+        用户机器上一般不会永久设 ``CHORUS_RVC_ROOT`` / ``CHORUS_PYTHON``，
+        所以这里从插件设置（以及模型目录倒推）补上，否则 start.ps1 会直接退出。
+        """
+        env = os.environ.copy()
+        # 父进程看护：AstrBot 被强杀时，中间层自己发现父进程没了就连常驻 worker 一起退出
+        env["CHORUS_PARENT_PID"] = str(os.getpid())
+        root = self._rvc_root_for_middleware()
         if root:
-            candidates.append(os.path.join(os.path.dirname(root), "chorus-mw"))
-            candidates.append(os.path.join(os.path.dirname(os.path.dirname(root)), "chorus-mw"))
-            candidates.append(os.path.join(root, "chorus-mw"))
-        for candidate in candidates:
-            if candidate and os.path.isfile(os.path.join(candidate, "app.py")):
-                return candidate
+            env["CHORUS_RVC_ROOT"] = root
+        python = self._chorus_python_path()
+        if python:
+            env["CHORUS_PYTHON"] = python
+        return env
+
+    def _rvc_root_for_middleware(self) -> str:
+        """中间层要的 RVC 整合包根目录：设置里填的优先，其次从模型目录倒推。"""
+        configured = str(getattr(self, "rvc_root", "") or "").strip()
+        if configured and os.path.isfile(os.path.join(configured, "runtime", "python.exe")):
+            return configured
+        found = middleware_lifecycle.find_rvc_root(self.rvc_models_dir)
+        if found and (not configured or configured != found):
+            logger.debug(f"RVC 整合包目录按模型目录推出来：{found}")
+        return found
+
+    def _chorus_python_path(self) -> str:
+        """跑中间层服务端的 python：设置里填了就用，否则交给 start.ps1 找 PATH。"""
+        configured = str(getattr(self, "chorus_python", "") or "").strip()
+        if configured and os.path.isfile(configured):
+            return configured
         return ""
+
+    async def _is_chorus_backend(self) -> bool:
+        """3333 上是不是 chorus-mw：/info 里有 Gradio 的 /convert 端点才算。"""
+
+        def _check() -> bool:
+            import urllib.request
+
+            base = str(self.rvc_base_url or "http://127.0.0.1:3333/")
+            url = base.rstrip("/") + "/info"
+            try:
+                with urllib.request.urlopen(url, timeout=8) as response:
+                    body = response.read(400_000).decode("utf-8", "ignore")
+            except Exception:
+                return False
+            return "/convert" in body and "named_endpoints" in body
+
+        try:
+            return await asyncio.to_thread(_check)
+        except Exception as error:
+            logger.debug(f"判断 3333 是不是中间层失败：{error}")
+            return False
+
+
+    async def _ensure_middleware(self) -> None:
+        """AstrBot 启动时的中间层托管：没人跑就拉起，旧实例就接管，别人的不碰。"""
+        if os.name != "nt" or not self.auto_middleware:
+            return
+        port = self._backend_port()
+        try:
+            chorus = middleware_lifecycle.find_chorus_dir(
+                self.chorus_dir, models_dir=self.rvc_models_dir
+            )
+            if await self._probe_local_port(self.rvc_base_url, timeout=3.0):
+                if not await self._is_chorus_backend():
+                    logger.warning(
+                        f"端口 {port} 被别的程序占用（/info 不是 chorus-mw），插件不接管；"
+                        "换端口或关掉那个程序后再重启插件"
+                    )
+                    return
+                marker = middleware_lifecycle.read_marker(self._middleware_marker())
+                owner = middleware_lifecycle.marker_owner(marker)
+                if owner == os.getpid():
+                    self._adopt_middleware()
+                    logger.info(f"中间层已在运行（pid {middleware_lifecycle.listener_pid(port)}），这次是插件重载，继续托管")
+                    return
+                if owner and middleware_lifecycle.pid_alive(owner):
+                    logger.info(f"中间层由另一个 AstrBot 进程（pid {owner}）托管，本次不重复拉起")
+                    return
+                # 旧守护脚本 / 手动启动 / 上一次没来得及关的实例：接管，保证带父进程看护
+                if not chorus:
+                    if not self._middleware_warned:
+                        self._middleware_warned = True
+                        logger.warning(
+                            f"端口 {port} 上的中间层不是插件拉起的，也没找到它的目录"
+                            "（要有 app.py 和 scripts\\start.ps1），无法接管；在设置里填「中间层目录」"
+                        )
+                    return
+                logger.info(f"端口 {port} 上是旧实例，插件接管：先停掉旧进程和旧守护，再重新拉起")
+                await asyncio.to_thread(self._run_middleware_script, chorus, True)
+                for _ in range(20):
+                    if not await self._probe_local_port(self.rvc_base_url, timeout=1.5):
+                        break
+                    await asyncio.sleep(0.5)
+                if await self._probe_local_port(self.rvc_base_url, timeout=1.5):
+                    logger.warning(f"接管失败：{port} 10 秒内没停下来，本次不重复拉起，先手动 /重启中间层")
+                    return
+
+            if not chorus:
+                if not self._middleware_warned:
+                    self._middleware_warned = True
+                    logger.warning(
+                        "中间层没在跑，也没找到它的目录（要有 app.py 和 scripts\\start.ps1）；"
+                        "在设置里填「中间层目录」，或设环境变量 CHORUS_DIR"
+                    )
+                return
+            root = self._rvc_root_for_middleware()
+            if not root:
+                if not self._middleware_warned:
+                    self._middleware_warned = True
+                    logger.warning(
+                        "找不到 RVC 整合包目录（要有 runtime\\python.exe），中间层起不来；"
+                        "在设置里填「RVC 目录」，或把「音色模型目录」指到 <RVC>\\assets\\weights"
+                    )
+                return
+
+            logger.info(f"中间层未运行，正在拉起：{chorus}")
+            creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            subprocess.Popen(
+                middleware_lifecycle.start_argv(chorus),
+                cwd=chorus,
+                env=self._middleware_env(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creation,
+            )
+            # 先记归属：即使还没就绪就退出，下一次也知道这份是我们起的
+            middleware_lifecycle.write_marker(
+                self._middleware_marker(),
+                {
+                    "chorus_dir": chorus,
+                    "astrbot_pid": os.getpid(),
+                    "started_at": time.time(),
+                    "adopted_at": 0,
+                    "ready": False,
+                },
+            )
+            for _ in range(90):
+                await asyncio.sleep(1)
+                if await self._probe_local_port(self.rvc_base_url, timeout=2.0):
+                    marker = middleware_lifecycle.read_marker(self._middleware_marker())
+                    marker.update({"ready": True, "ready_at": time.time()})
+                    middleware_lifecycle.write_marker(self._middleware_marker(), marker)
+                    logger.info(
+                        f"中间层已随插件启动（pid {middleware_lifecycle.listener_pid(port)}），"
+                        "AstrBot 退出时会一起关掉"
+                    )
+                    return
+            logger.warning(
+                "拉起了中间层，但 90 秒内 3333 还没就绪；看中间层目录下 _work\\mw.log。"
+                "中间层进程仍挂在 AstrBot 下，退出时会一起结束"
+            )
+        except Exception as error:
+            logger.warning(f"自动启动中间层失败：{error}")
+
+    def _adopt_middleware(self) -> None:
+        """中间层已经在跑：如果记录是本插件写的，就认领到当前进程（重载后继续托管）。"""
+        marker = middleware_lifecycle.read_marker(self._middleware_marker())
+        if not marker:
+            return
+        marker["astrbot_pid"] = os.getpid()
+        marker["adopted_at"] = time.time()
+        middleware_lifecycle.write_marker(self._middleware_marker(), marker)
+
+    def _schedule_middleware_stop(self) -> None:
+        """插件停用时关掉自己拉起的中间层；插件重载不关（等 15 秒看有没有新实例认领）。"""
+        if os.name != "nt" or not self.auto_middleware:
+            return
+        marker = middleware_lifecycle.read_marker(self._middleware_marker())
+        if not marker:
+            return
+        stopped_at = time.time()
+
+        async def delayed() -> None:
+            await asyncio.sleep(15)
+            current = middleware_lifecycle.read_marker(self._middleware_marker())
+            if not middleware_lifecycle.should_stop(current, os.getpid(), stopped_at):
+                return
+            chorus = str(current.get("chorus_dir") or self.chorus_dir)
+            if not chorus:
+                return
+            try:
+                await asyncio.to_thread(self._run_middleware_script, chorus, True)
+                if middleware_lifecycle.listener_pid(self._backend_port()):
+                    logger.warning(
+                        f"关闭中间层后 {self._backend_port()} 还在监听：可能有别的守护在拉起它，"
+                        "去中间层目录看 _work\\supervisor.log"
+                    )
+                else:
+                    middleware_lifecycle.remove_marker(self._middleware_marker())
+                    logger.info("插件已停用，中间层随之关闭")
+            except Exception as error:
+                logger.warning(f"关闭中间层失败：{error}")
+
+        try:
+            asyncio.create_task(delayed())
+        except Exception as error:
+            logger.debug(f"调度中间层关闭失败：{error}")
+
+    def _run_middleware_script(
+        self, chorus: str, stop: bool = False, env: Optional[Dict[str, str]] = None
+    ) -> str:
+        """跑一次中间层自带的 start.ps1（stop=True 时带 -Stop），返回末尾输出。
+
+        stop 会把旧守护脚本（start_supervisor.ps1）和整棵进程树一起收掉，
+        不留「你杀了 app.py，守护 10 秒后又拉起来」的尾巴。
+        """
+        creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        argv = (
+            middleware_lifecycle.stop_argv(chorus)
+            if stop
+            else middleware_lifecycle.start_argv(chorus)
+        )
+        proc = subprocess.run(
+            argv,
+            cwd=chorus,
+            env=env,
+            capture_output=True,
+            timeout=180,
+            creationflags=creation,
+        )
+        out = (proc.stdout or b"").decode("utf-8", "ignore")
+        err = (proc.stderr or b"").decode("utf-8", "ignore")
+        return (out + "\n" + err).strip()[-600:]
 
     def _backend_port(self) -> int:
         try:
             return int(str(self.rvc_base_url).split(":")[-1].strip("/ "))
         except (ValueError, IndexError):
             return 3333
+
+    def _middleware_owner_lines(self) -> list[str]:
+        """自检里那行「中间层归谁管」：说清楚退出时会不会跟着关。"""
+        if os.name != "nt":
+            return ["ℹ️ 非 Windows：插件不做启停，请自己保证 3333 常驻"]
+        port = self._backend_port()
+        if not middleware_lifecycle.listener_pid(port):
+            return []
+        marker = middleware_lifecycle.read_marker(self._middleware_marker())
+        owner = middleware_lifecycle.marker_owner(marker)
+        if owner == os.getpid():
+            return ["✅ 中间层由本插件托管：关掉 AstrBot 会一起退出"]
+        if owner and middleware_lifecycle.pid_alive(owner):
+            return [f"ℹ️ 中间层由另一个 AstrBot 进程（pid {owner}）托管，本插件不碰"]
+        if not self.auto_middleware:
+            return ["ℹ️ 自动托管已关闭（auto_middleware=false），中间层由你手动管理"]
+        return ["⚠️ 中间层不是插件拉起的：关掉 AstrBot 不会关它；重启一次 AstrBot 会自动接管"]
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("重启中间层")
@@ -2911,21 +3159,8 @@ class MusicPlugin(Star):
         port = self._backend_port()
         yield event.plain_result(f"🔄 正在重启中间层（端口 {port}）…")
 
-        def _run(script_args: List[str]) -> str:
-            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-            proc = subprocess.run(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", starter] + script_args,
-                cwd=chorus,
-                capture_output=True,
-                timeout=180,
-                creationflags=flags,
-            )
-            out = (proc.stdout or b"").decode("utf-8", "ignore")
-            err = (proc.stderr or b"").decode("utf-8", "ignore")
-            return (out + "\n" + err).strip()[-400:]
-
         try:
-            await asyncio.to_thread(_run, ["-Stop"])
+            await asyncio.to_thread(self._run_middleware_script, chorus, True)
         except Exception as error:
             logger.warning(f"停止中间层时报错（继续尝试启动）：{error}")
 
@@ -2935,13 +3170,27 @@ class MusicPlugin(Star):
             await asyncio.sleep(1)
 
         try:
-            await asyncio.to_thread(_run, [])
+            await asyncio.to_thread(
+                self._run_middleware_script, chorus, False, self._middleware_env()
+            )
         except Exception as error:
             yield event.plain_result(f"❌ 启动脚本执行失败：{error}")
             return
 
         for _ in range(60):
             if await self._probe_local_port(f"http://127.0.0.1:{port}", timeout=1.5):
+                # 这是插件拉起来/重启的，记一笔归属，之后插件停用时跟着关
+                marker = middleware_lifecycle.read_marker(self._middleware_marker())
+                marker.update(
+                    {
+                        "chorus_dir": chorus,
+                        "astrbot_pid": os.getpid(),
+                        "started_at": time.time(),
+                        "adopted_at": 0,
+                        "ready": True,
+                    }
+                )
+                middleware_lifecycle.write_marker(self._middleware_marker(), marker)
                 yield event.plain_result(f"✅ 中间层已重启，{port} 在听。发 /环境自检 复核一下。")
                 return
             await asyncio.sleep(3)
@@ -2961,10 +3210,14 @@ class MusicPlugin(Star):
         try:
             info, models = await self._fetch_models_info()
             lines.append(f"✅ 中间层 {self.rvc_base_url} 可达，模型 {len(models)} 个")
+            lines.extend(self._middleware_owner_lines())
         except Exception as error:
             problems += 1
             lines.append(f"❌ 中间层不可达（{self.rvc_base_url}）：{error}")
-            lines.append("   → 去插件目录双击 install.bat，或手动跑 chorus-mw\\scripts\\start.ps1")
+            lines.append(
+                "   → 插件启动时会自动拉起；起不来先看设置里的「中间层目录」「RVC 目录」，"
+                "或双击 install.bat 重新体检"
+            )
 
         models_dir = str((info or {}).get("dir") or self.rvc_models_dir or "")
         if info:
@@ -3222,6 +3475,14 @@ class MusicPlugin(Star):
             asyncio.create_task(self._startup_refresh_models())
         except Exception as error:
             logger.debug(f"启动同步模型列表失败：{error}")
+        # 中间层随 AstrBot 启停（0.19.17）：平台热重载会再进这里，用任务句柄去重
+        if self.auto_middleware and os.name == "nt" and (
+            self._middleware_task is None or self._middleware_task.done()
+        ):
+            try:
+                self._middleware_task = asyncio.create_task(self._ensure_middleware())
+            except Exception as error:
+                logger.debug(f"调度中间层自启失败：{error}")
 
     @filter.on_platform_loaded(priority=sys.maxsize)
     async def on_qq_platform_loaded(self):
@@ -4990,5 +5251,17 @@ Args:
                 await self.netease_fetcher.close()
         except Exception as e:
             logger.debug(f"[MatsukoCover] 关闭取歌 session: {e}")
+
+        # 中间层是本插件托管的就跟着关（重载时会等新实例认领，不掐断正在跑的翻唱）
+        try:
+            task = self._middleware_task
+            if task is not None and not task.done():
+                task.cancel()
+        except Exception as e:
+            logger.debug(f"[MatsukoCover] 取消中间层启动任务失败: {e}")
+        try:
+            self._schedule_middleware_stop()
+        except Exception as e:
+            logger.debug(f"[MatsukoCover] 安排中间层关闭失败: {e}")
 
         logger.info("[MatsukoCover] 资源清理完成")

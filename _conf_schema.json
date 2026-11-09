@@ -5,6 +5,30 @@
         "hint": "你的 Gradio API RVC 后端运行的地址，必须以 / 结尾。\n\n这个后端就是配套的中间层 chorus-mw（不是 RVC 整合包自带的 7897 WebUI）：https://github.com/void-HaoNan/chorus-mw 。\n中间层负责切副歌、分离、移调、变声、混音；插件只用 gradio_client 2.x（sse），直连 RVC 的 Gradio 3.14（ws）会报 Unknown protocol: ws，所以必须有这一层。\n本机默认 http://127.0.0.1:3333/ ；没起中间层时翻唱会失败，点歌不受影响。",
         "default": "http://127.0.0.1:3333/"
     },
+    "auto_middleware": {
+        "description": "随 AstrBot 启停中间层（托管 3333）",
+        "type": "bool",
+        "hint": "打开后插件托管 3333：\n· 启动时 3333 连不上 → 用中间层自带的 scripts\\start.ps1 拉起；\n· 3333 上是旧守护/手动拉起的实例 → 先停掉旧进程和旧守护，再重新拉起（接管）；\n· AstrBot 正常退出/插件停用 → 关掉自己托管的中间层；\n· AstrBot 被强杀 → 中间层自己看父进程，2 秒内连常驻 worker 一起退出。\n\n关闭后完全由你自己管理中间层（systemd / 守护脚本都行），插件只调用、不启停。\n换端口、或者 3333 被别的程序占用时，插件不会去动别人的进程。\n默认开。Linux/Docker 下不做启停（只支持 Windows）。",
+        "default": true
+    },
+    "chorus_dir": {
+        "description": "中间层目录（留空自动找）",
+        "type": "string",
+        "hint": "chorus-mw 所在目录，里面要有 app.py 和 scripts\\start.ps1，例如 D:\\PYMSS-RVC\\chorus-mw。\n留空时按顺序找：环境变量 CHORUS_DIR → RVC 整合包同级/上级的 chorus-mw。\n一键安装器会自动把这一项写好，手动装的在这里填一次即可。",
+        "default": ""
+    },
+    "rvc_root": {
+        "description": "RVC 整合包目录（自动拉起中间层用）",
+        "type": "string",
+        "hint": "里面有 runtime\\python.exe 和 assets\\weights 的那个目录，例如 D:\\PYMSS-RVC\\RVC20260718Nvidia50x0。\n中间层启动必须要这个路径（环境变量 CHORUS_RVC_ROOT）；一键安装器会自动填。\n留空时插件会从「音色模型目录」往上找 runtime\\python.exe，再退回环境变量 CHORUS_RVC_ROOT。",
+        "default": ""
+    },
+    "chorus_python": {
+        "description": "跑中间层的 Python（留空自动找）",
+        "type": "string",
+        "hint": "中间层服务端用的解释器，必须是 3.10~3.12 且装过 chorus-mw 的 requirements；例如 C:\\Users\\你\\AppData\\Local\\Programs\\Python\\Python312\\python.exe。\n留空时 start.ps1 从 PATH 里找 python（会跳过 Windows 商店的假 python）。\n一键安装器会把找到的 Python 写进来。",
+        "default": ""
+    },
     "netease_cookie": {
         "description": "网易云 MUSIC_U（备用取歌路径用）",
         "type": "string",

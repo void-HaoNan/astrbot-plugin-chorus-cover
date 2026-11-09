@@ -1,21 +1,68 @@
 # astrbot_plugin_chorus_cover · RVC 副歌翻唱
 
-给 AstrBot：https://github.com/AstrBotDevs/AstrBot 用的 **RVC 翻唱插件**：说一句「翻唱《歌名》」，它自己去找歌、切成副歌（或整首）、交给 RVC 后端换声，完事把音频发回群聊。
+给 AstrBot（https://github.com/AstrBotDevs/AstrBot）用的 **RVC 翻唱插件**：说一句「翻唱《歌名》」，它自己去找歌、切成副歌（或整首），交给 RVC 后端换声，完事把音频发回群聊。
 
-本项目的取歌与下载逻辑借用了 astrbot_plugin_music：https://github.com/Zhalslar/astrbot_plugin_music 的实现思路。
-
-- 版本：`0.19.16`
+- 版本：`0.19.17`
 - 作者：void-HaoNan
 - 仓库：<https://github.com/void-HaoNan/astrbot-plugin-chorus-cover>
-- **配套中间层（必需）**：`chorus-mw` ≥ `0.9.14`：https://github.com/void-HaoNan/chorus-mw —— 本插件只负责找歌和发语音，切副歌、分离、移调、变声、混音都由它干；没有它插件连不上 `3333`，翻唱会直接失败
+- **配套中间层（必需）**：`chorus-mw` ≥ `0.9.16`：<https://github.com/void-HaoNan/chorus-mw> —— 本插件只负责找歌和发语音，切副歌、分离、移调、变声、混音都由它干；没有它插件连不上 `3333`，翻唱会直接失败
 - 许可：AGPL-3.0（见文末「许可与出处」）
 - **安全说明**：[`SECURITY.md`](SECURITY.md) —— 插件会碰哪些边界、安装脚本做什么、误报怎么核对
 - **设置项清单**：[`SETTINGS.md`](SETTINGS.md) —— 每个设置由哪一行代码读取，防止「假设置」
+- 本项目的取歌与下载逻辑借用了 astrbot_plugin_music（<https://github.com/Zhalslar/astrbot_plugin_music>）的实现思路。
+
+---
+
+## 🚀 装之前先看这一段：用 DSH / AI 工具安装（最省事）
+
+**为什么放在最前面**：这套东西要同时碰 AstrBot、RVC 整合包、中间层 `chorus-mw`、音色模型目录、Python 3.10~3.12 五件事。人手动装，最常见的三个结局是：中间层没起来、Python 版本不对、路径填错。让能执行命令的 AI 按清单走，比自己照着文字点可靠。
+
+**把下面整段复制给 DSH（DeepSeek Harness），或者 Claude Code / Cursor / Codex 这类能跑命令的 AI：**
+
+```text
+帮我安装并配置 astrbot_plugin_chorus_cover（RVC 翻唱插件）：
+插件仓库 https://github.com/void-HaoNan/astrbot-plugin-chorus-cover
+中间层仓库 https://github.com/void-HaoNan/chorus-mw
+
+要求：
+1. 先读插件仓库的 INSTALL_AGENT.md，按里面的检查项一步步做，每一步把结果告诉我。
+2. 中间层 3333 由插件自己启动和关闭，不要用 start_supervisor.ps1，也不要单独开守护窗口。
+3. 装完重启 AstrBot，等 3333 就绪，在群里发 /环境自检，把结果贴给我；再关一次 AstrBot 确认没有残留进程。
+```
+
+AI 会按 [`INSTALL_AGENT.md`](INSTALL_AGENT.md) 的顺序走：AstrBot 版本 → 插件目录 → 中间层目录 → RVC 整合包 → Python 3.10~3.12 与依赖 → 执行策略/权限 → 启动 → `/环境自检` → 停一次确认无残留。
+
+- **不想用 AI**：双击插件目录里的 `scripts\install.bat`，做的是同一件事；只想看状态用 `install.bat -CheckOnly`。
+- **装完应该看到什么**（先记住，省得以为没装好）：
+  - 重启 AstrBot 后 10~40 秒，`http://127.0.0.1:3333` 自动就绪，不需要你开任何黑色窗口；
+  - 关掉 AstrBot，3333、常驻 worker、以及中间层自己拉起的 RVC WebUI 一起退出，任务管理器里不留 python / powershell；
+  - 群里 `/环境自检` 会显示「中间层由本插件托管」。
+
+> ⚠️ **一台机器只能有一个中间层管理者。** 如果你以前用过 `start_supervisor.ps1`，或者直播控制台的守护在管 3333，请先把它关掉再重启 AstrBot。插件启动时会尝试接管（停掉旧实例和旧守护再拉起），但最稳的是一次性关干净。
+
+### 用户安装时最常卡住的 13 件事（我们开发机不一定有，你的机器可能有）
+
+| # | 现象 | 原因 | 怎么办 |
+|---|---|---|---|
+| 1 | PowerShell 报「无法加载文件 … 因为在此系统上禁止运行脚本」 | 执行策略是 Restricted | `install.bat` 已经带 `-ExecutionPolicy Bypass`；手动跑脚本也加这个参数，或执行 `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
+| 2 | 双击 `install.bat` 闪一下就没了 | 报错被窗口带走 | 在 `scripts` 目录地址栏输入 `powershell` 回车，再跑 `.\installer.ps1`，红字就是原因 |
+| 3 | 中间层起不来，`_work\mw.log` 里 `ModuleNotFoundError` | 依赖装在另一个 Python 上 | 用设置里的「跑中间层的 Python」指到装过依赖的 3.10~3.12；或在中间层目录重跑安装器 |
+| 4 | `pip install` 一堆红字 / torch 装不上 | 用了 Python 3.13 | RVC 依赖只到 3.12：装 3.10~3.12，或在设置里指定 |
+| 5 | 「找不到 python」/ 解析到 Windows 商店 | PATH 里是 `WindowsApps` 的假 python | 装 python.org 版本并勾 Add to PATH；或设置里指定 `python.exe` 完整路径 |
+| 6 | 路径里有中文、空格、OneDrive | 老脚本拼命令没加引号 / 同步目录锁文件 | 装到短路径（如 `D:\RVC`），别放 OneDrive 同步目录 |
+| 7 | 重启 AstrBot 后 3333 一直不通，机器却不卡 | 冷启动要 import torch，10~40 秒正常 | 等 `/环境自检`；超过 90 秒再看 `_work\mw.log` |
+| 8 | 关掉 AstrBot 后 3333 还在 | 中间层是旧守护/控制台拉起的（外部实例） | 关掉 `start_supervisor.ps1` 或控制台的守护；重启 AstrBot 让插件接管 |
+| 9 | 两个窗口抢 3333，日志一直「已在监听」 | 有两份管理者 | 只留插件：`start.ps1 -Status` 能看到旧守护 pid，`start.ps1 -Stop` 会一起收 |
+| 10 | GitHub 下载失败 | 网络到不了 codeload | 手动下 chorus-mw 的 zip 解压到 RVC 旁边，或设置「中间层目录」 |
+| 11 | 中间层报 `When localhost is not accessible` | 系统代理把 127.0.0.1 也代理了 | `start.ps1` 已设 `NO_PROXY`；自己另起 Gradio 也要设 |
+| 12 | AstrBot 装在 pipx/uv，找不到 `data` 目录 | 数据目录不一定是 `C:\Users\<你>\data` | 用 `ASTRBOT_DATA_DIR`，或安装器问的时候手动填；插件设置页能直接看到路径 |
+| 13 | 杀毒软件拦 `taskkill` / `.ps1` | 启发式拦截 | 给插件目录和中间层目录加信任；看 `_work\supervisor.log` 有没有「拒绝访问」 |
 
 中间层版本对照（插件会按 `/info` 参数表探测，没有的就不传，不会因为多传报错）：
 
 | 中间层版本 | 插件这边多出来的能力 |
 | --- | --- |
+| `0.9.16` 起 | 中间层自己看父进程（`CHORUS_PARENT_PID`）：AstrBot 被强杀也不留替身；`start.ps1 -Stop` 连旧守护和常驻 worker 一起收 |
 | `0.9.14` | 翻唱任务全局串行化：同时来两首不会一起抢显卡，后到的排队（插件 0.19.15 起不再自己加等待） |
 | `0.9.13` | 清唱端点 `/convert_vocal_only`，对应插件设置 `vocal_only` |
 | `0.9.4` 起 | `/convert` 的 `chorus_start`，对应插件设置 `chorus_start_seconds`（指定副歌从第几秒开始） |
@@ -26,11 +73,11 @@
 
 > 装完先在群里发 `/环境自检`，下面几项它会逐条告诉你缺哪条。
 
-1. **中间层 chorus-mw 必须跑在 `http://127.0.0.1:3333`**
-   没有它，找歌能成功、翻唱一定失败。装法见 [`INSTALL.md`](INSTALL.md)，或直接用 `scripts\install.bat`。
+1. **中间层 chorus-mw 要能连上 `http://127.0.0.1:3333`**
+   没有它，找歌能成功、翻唱一定失败。0.19.17 起插件会**托管**这一层：启动时连不上就拉起，发现是旧守护/手动拉起的实例就接管，AstrBot 退出时关掉（设置 `auto_middleware`，只在 Windows 生效）。正常情况你不用自己开任何窗口；只有 Linux/Docker、或者你把 `auto_middleware` 关掉时才需要自己保证 3333 常驻。
 
 2. **RVC 整合包 + 音色模型目录（设置里必填）**
-   - `RVC 目录`：里面有 `runtime` 和 `assets` 的整合包路径
+   - `RVC 目录`：里面有 `runtime` 和 `assets` 的整合包路径（中间层启动必须）
    - `音色模型目录`：`.pth` / `.index` 所在目录
    路径填错的表现是「翻唱跑一半报错」或「找不到模型」。
 
@@ -48,18 +95,29 @@
 
 ---
 
-## 推荐：让 DSH / AI 全自动安装
+## 中间层的生命周期（0.19.17 起）
 
-手工装这一套要碰 AstrBot、RVC 整合包、中间层、模型目录、Python 依赖五件事，人很容易漏。推荐把下面这句话直接交给 DSH（或任何能执行命令的 AI 助手）：
+一句话：**3333 归插件管，跟着 AstrBot 一起起、一起停，不留尾巴；别人的进程不碰。**
 
-```
-帮我安装并配置 astrbot_plugin_chorus_cover：
-插件仓库 https://github.com/void-HaoNan/astrbot-plugin-chorus-cover
-中间层仓库 https://github.com/void-HaoNan/chorus-mw
-先读仓库里的 INSTALL_AGENT.md，按里面的检查项一步步做，装完在群里发 /环境自检，把结果贴给我。
-```
+| 时机 | 插件做什么 |
+| --- | --- |
+| AstrBot 启动、插件加载 | 先探 3333：<br>· 没跑 → 用 `chorus_dir` 找到中间层，`scripts\start.ps1` 拉起（带 `CHORUS_PARENT_PID`，最多等 90 秒）<br>· 跑着、归属记录是本进程 → 认领（重载场景）<br>· 跑着、是旧守护/手动拉起的 → **接管**：先 `start.ps1 -Stop` 收掉旧守护和整棵树，再重新拉起<br>· 跑着、但不是 chorus-mw（`/info` 里没有 `/convert`）→ 不动，日志里明确报「被别的程序占用」 |
+| 插件重载（改配置、点重载） | **不重启中间层**：认领上一次的实例，避免把正在跑的翻唱掐掉 |
+| AstrBot 正常退出 / 插件停用 | 等 15 秒确认没有新实例认领，然后 `start.ps1 -Stop`：先收旧守护，再 `taskkill /T` 收掉中间层和常驻 worker，最后确认 3333 真的空出来 |
+| AstrBot 被强杀 / 崩了 | 插件来不及清理，中间层自己盯着父进程（`CHORUS_PARENT_PID`），发现父进程没了就 `taskkill /T` 连常驻 worker 一起退出，不留孤儿进程 |
+| 旧守护 `start_supervisor.ps1` 还在 | 插件接管时会先收掉它；守护脚本自己也会发现插件在托管而拒绝启动（读 `middleware.json`） |
 
-它会照 `INSTALL_AGENT.md` 里的顺序检查：AstrBot 版本、插件目录、中间层 3333、RVC 整合包路径、ffmpeg、取歌服务、音色目录，缺哪步补哪步，最后用 `/环境自检` 给出结论。
+相关设置：
+
+| 设置 | 默认 | 说明 |
+| --- | --- | --- |
+| `auto_middleware` | 开 | 托管 3333：自动拉起、接管旧实例、退出时关闭。关掉后完全由你管理，插件只调用 |
+| `chorus_dir` | 空 | 中间层目录（要有 `app.py` 和 `scripts\start.ps1`）。一键安装器会自动写；留空时按 `CHORUS_DIR` 环境变量、RVC 整合包旁边的 `chorus-mw` 找 |
+| `rvc_root` | 空 | RVC 整合包目录（要有 `runtime\python.exe`）。中间层启动必须；留空时从「音色模型目录」往上找 |
+| `chorus_python` | 空 | 跑中间层的 Python（3.10~3.12）。留空时 `start.ps1` 从 PATH 找，会跳过 Windows 商店的假 python |
+
+> Linux / Docker 下插件不做启停（只支持 Windows）：请用 systemd 或容器编排让中间层常驻，并把 `auto_middleware` 关掉。
+> 想看状态：群里 `/环境自检`（会写清楚中间层归谁管）；想手动重启：`/重启中间层`（重启后的实例也归插件管，退出时一起关）；命令行：`scripts\start.ps1 -Status` / `-Stop`。
 
 ## 更新：插件市场点更新，不等于全部更新
 
@@ -108,6 +166,7 @@
 
 - **只做 RVC**：一个推理引擎、一条链路；没有 SVC、没有参考音色，设置页里也不会出现无效开关。
 - **音色/音量全在设置页**：`f0_method`、`index_rate`、`rms_mix_rate`、`protect`、`inst_volume_db`、`vocal_volume_db` 都会按名字传给中间层（chorus-mw 0.8.0 起真的生效），调完下一次翻唱就能听出来。
+- **中间层随插件启停（0.19.17）**：AstrBot 起来时自动拉起 3333，退出时只关自己拉起的那份，强杀也不留孤儿进程（`auto_middleware`，默认开）。
 - **清唱模式（0.19.13）**：`vocal_only` 打开后只出变声后的人声、不混伴奏，走中间层单独的 `/convert_vocal_only` 端点。适合自己后期、听换声效果、或者原曲伴奏太吵的场合。需要 chorus-mw `0.9.13` 起。
 - **多音源取歌**：`source_order` 决定顺序与启停，默认网易云 → 酷狗 → 酷我 → QQ 音乐；前一个源没成自动换下一个，日志里每个源一行结论。
 - **匹配规则确定**：歌名整串原样搜；别名只在「标题+别名 == 歌名」时命中；歌手只在用户明确说出时当过滤条件；伴奏类候选直接淘汰。
@@ -309,13 +368,15 @@ RVC 只扫 `assets\weights` 这一层，**不认子目录**。想整理成 `中�
 
 ## 配置表
 
-68 项，和 `_conf_schema.json` 一一对应；每一项由哪行代码读取见 [`SETTINGS.md`](SETTINGS.md)。
+70 项，和 `_conf_schema.json` 一一对应；每一项由哪行代码读取见 [`SETTINGS.md`](SETTINGS.md)。
 
 ### 连接与模型
 
 | 配置项 | 默认 | 说明 |
 |---|---|---|
 | `rvc_base_url` | `http://127.0.0.1:3333/` | RVC 后端（Gradio）地址，必须以 `/` 结尾 |
+| `auto_middleware` | `true` | 随 AstrBot 启停中间层（只关插件自己拉起的实例，外部实例不碰；Windows 有效） |
+| `chorus_dir` | 空 | 中间层目录，留空自动找；一键安装器会自动填 |
 | `enable_rvc` | `true` | 总开关；关掉后 `/rvc`、各工具、本地音频入口都会提示已关闭 |
 | `rvc_models_dir` | 空 | 音色模型（`.pth`）文件夹。留空 = 自动用中间层实际目录（默认 `<RVC>\assets\weights`）；填了会拿去和中间层核对，不一致时 `/刷新rvc模型` 会告警。换目录的正确做法见「音色模型放哪」 |
 | `model_library_dir` | 空 | 分类音色库根目录（`中文/角色/`、`日语/角色/` 这种）。填了才能用 `/同步音色库`，自动把库里的模型硬链接进 `assets` 并刷新列表 |
@@ -473,6 +534,11 @@ RVC 只扫 `assets\weights` 这一层，**不认子目录**。想整理成 `中�
 那些是训练时的中间检查点（每 10 轮存一次的 `-sw 1` 产物），会被当成可用音色列出来。
 训练时用 `-sw 0` 只留最终模型，或者训练完把它们从 `assets/weights` 移到 `logs/` 下面。
 
+**Q：中间层要不要单独启动？**
+不用。0.19.17 起插件启动时会自己拉起（`auto_middleware` 默认开），退出时也会关掉自己拉起的那个。
+只有这几种情况需要你手动管：装在 Linux/Docker（插件不做启停）、`auto_middleware` 被关掉、
+或者中间层不在插件能找到的位置（`chorus_dir` 留空又不在 RVC 整合包旁边）。
+
 **Q：`/rvc` 说「当前没有可用的 RVC 模型」？**
 先 `/刷新rvc模型`。它读后端的 `/show_model`，后端没起或地址填错都会空。
 
@@ -522,6 +588,7 @@ RVC 只扫 `assets\weights` 这一层，**不认子目录**。想整理成 `中�
 
 只记最近几条，完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
+- **v0.19.17**：中间层随 AstrBot 启停（`auto_middleware` / `chorus_dir`），退出只关自己拉起的实例；中间层加父进程看护，强杀 AstrBot 也不留孤儿进程。
 - **v0.19.16**：修一键安装器下载中间层的两个 404 地址（仓库没打 tag、默认分支是 `master`），脚本执行策略统一改 `Bypass`；后端参数探测兼容新版 gradio_client，避免升级后 `render_mode` 等参数静默不传。
 - **v0.19.15**：配合中间层 0.9.14 的串行化——后端两个入口共用一把全局锁，插件侧不再自己加等待；中间层低于 0.9.14 时行为不变。
 - **v0.19.13**：新增清唱开关 `vocal_only`（走中间层 `/convert_vocal_only`，只出人声）；新增 `media_info` 封面/歌词统一接口（四平台一套返回格式，给外部调用方用）；点歌前先查歌，查不到直接说「没找到」，不再排进队列空等。
