@@ -166,7 +166,7 @@ AI 会按 [`INSTALL_AGENT.md`](INSTALL_AGENT.md) 的顺序走：AstrBot 版本 �
 
 - **只做 RVC**：一个推理引擎、一条链路；没有 SVC、没有参考音色，设置页里也不会出现无效开关。
 - **音色/音量全在设置页**：`f0_method`、`index_rate`、`rms_mix_rate`、`protect`、`inst_volume_db`、`vocal_volume_db` 都会按名字传给中间层（chorus-mw 0.8.0 起真的生效），调完下一次翻唱就能听出来。
-- **中间层随插件启停（0.19.17）**：AstrBot 起来时自动拉起 3333，退出时只关自己拉起的那份，强杀也不留孤儿进程（`auto_middleware`，默认开）。
+- **中间层随插件启停（0.19.17）**：3333 由插件托管——AstrBot 起来时自动拉起，旧守护/手动实例会被接管，退出时连常驻 worker 一起关，强杀也不留孤儿进程（`auto_middleware`，默认开）。
 - **清唱模式（0.19.13）**：`vocal_only` 打开后只出变声后的人声、不混伴奏，走中间层单独的 `/convert_vocal_only` 端点。适合自己后期、听换声效果、或者原曲伴奏太吵的场合。需要 chorus-mw `0.9.13` 起。
 - **多音源取歌**：`source_order` 决定顺序与启停，默认网易云 → 酷狗 → 酷我 → QQ 音乐；前一个源没成自动换下一个，日志里每个源一行结论。
 - **匹配规则确定**：歌名整串原样搜；别名只在「标题+别名 == 歌名」时命中；歌手只在用户明确说出时当过滤条件；伴奏类候选直接淘汰。
@@ -233,8 +233,9 @@ AI 会按 [`INSTALL_AGENT.md`](INSTALL_AGENT.md) 的顺序走：AstrBot 版本 �
 - Python 依赖：`gradio_client`、`aiohttp`（见 `requirements.txt`）
 
 **装完插件先双击 `scripts\install.bat`**：它会找 AstrBot 数据目录、RVC 整合包、chorus-mw，
-缺什么补什么（中间层、Python 依赖、rubberband），最后启动 3333。只想看当前状态就加 `-CheckOnly`。
-完整步骤和排障见 [`INSTALL.md`](INSTALL.md)。
+缺什么补什么（中间层、Python 依赖、rubberband），把后端地址/中间层目录/RVC 目录/Python 写进配置，
+最后试启动一次确认依赖完整再停掉。**重启 AstrBot 后由插件自动拉起 3333，不用你手动开。**
+只想看当前状态就加 `-CheckOnly`。完整步骤和排障见 [`INSTALL.md`](INSTALL.md)。
 
 装好以后在群里发 `/环境自检`（管理员）看结果：后端、模型、运行时、ffmpeg、三档语言音色、取歌服务
 一行一个结论，全绿才能唱。
@@ -256,7 +257,9 @@ pip install -r astrbot_plugin_chorus_cover/requirements.txt
 
 ## 后端准备
 
-**后端就是姊妹仓库 `chorus-mw`：https://github.com/void-HaoNan/chorus-mw**（不是随便一个 Gradio 服务）。先把它跑起来：`http://127.0.0.1:3333/`，然后本插件才能工作。装法和启动脚本都在那个仓库的 README 里。
+**后端就是姊妹仓库 `chorus-mw`：https://github.com/void-HaoNan/chorus-mw**（不是随便一个 Gradio 服务）。
+0.19.17 起它默认由本插件托管：AstrBot 启动时自动拉起 `http://127.0.0.1:3333/`、退出时关闭，**不用你手动开**。
+只有把 `auto_middleware` 关掉、或者你用别的客户端调中间层时，才需要照那个仓库的 README 自己启动。
 
 插件按 Gradio API 说话，默认端口 `3333`，需要后端提供：
 
@@ -368,15 +371,17 @@ RVC 只扫 `assets\weights` 这一层，**不认子目录**。想整理成 `中�
 
 ## 配置表
 
-70 项，和 `_conf_schema.json` 一一对应；每一项由哪行代码读取见 [`SETTINGS.md`](SETTINGS.md)。
+72 项，和 `_conf_schema.json` 一一对应；每一项由哪行代码读取见 [`SETTINGS.md`](SETTINGS.md)。
 
 ### 连接与模型
 
 | 配置项 | 默认 | 说明 |
 |---|---|---|
 | `rvc_base_url` | `http://127.0.0.1:3333/` | RVC 后端（Gradio）地址，必须以 `/` 结尾 |
-| `auto_middleware` | `true` | 随 AstrBot 启停中间层（只关插件自己拉起的实例，外部实例不碰；Windows 有效） |
+| `auto_middleware` | `true` | 托管 3333：自动拉起、接管旧守护/手动实例、退出时关闭；关掉后完全自己管（Windows 有效） |
 | `chorus_dir` | 空 | 中间层目录，留空自动找；一键安装器会自动填 |
+| `rvc_root` | 空 | RVC 整合包目录（中间层启动必须）；留空从音色模型目录往上找 |
+| `chorus_python` | 空 | 跑中间层的 Python（3.10~3.12），留空由 start.ps1 从 PATH 找 |
 | `enable_rvc` | `true` | 总开关；关掉后 `/rvc`、各工具、本地音频入口都会提示已关闭 |
 | `rvc_models_dir` | 空 | 音色模型（`.pth`）文件夹。留空 = 自动用中间层实际目录（默认 `<RVC>\assets\weights`）；填了会拿去和中间层核对，不一致时 `/刷新rvc模型` 会告警。换目录的正确做法见「音色模型放哪」 |
 | `model_library_dir` | 空 | 分类音色库根目录（`中文/角色/`、`日语/角色/` 这种）。填了才能用 `/同步音色库`，自动把库里的模型硬链接进 `assets` 并刷新列表 |
@@ -588,7 +593,7 @@ RVC 只扫 `assets\weights` 这一层，**不认子目录**。想整理成 `中�
 
 只记最近几条，完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
-- **v0.19.17**：中间层随 AstrBot 启停（`auto_middleware` / `chorus_dir`），退出只关自己拉起的实例；中间层加父进程看护，强杀 AstrBot 也不留孤儿进程。
+- **v0.19.17**：中间层随 AstrBot 启停（`auto_middleware` / `chorus_dir` / `rvc_root` / `chorus_python`），旧守护/手动实例自动接管，退出连常驻 worker 一起关；中间层加父进程看护，强杀 AstrBot 也不留孤儿进程；README 顶部前置 DSH/AI 安装指令与用户安装 13 个卡点。
 - **v0.19.16**：修一键安装器下载中间层的两个 404 地址（仓库没打 tag、默认分支是 `master`），脚本执行策略统一改 `Bypass`；后端参数探测兼容新版 gradio_client，避免升级后 `render_mode` 等参数静默不传。
 - **v0.19.15**：配合中间层 0.9.14 的串行化——后端两个入口共用一把全局锁，插件侧不再自己加等待；中间层低于 0.9.14 时行为不变。
 - **v0.19.13**：新增清唱开关 `vocal_only`（走中间层 `/convert_vocal_only`，只出人声）；新增 `media_info` 封面/歌词统一接口（四平台一套返回格式，给外部调用方用）；点歌前先查歌，查不到直接说「没找到」，不再排进队列空等。
